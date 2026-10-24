@@ -22,8 +22,13 @@ class MainFrame extends JFrame {
     private final String username;
     private Calendar selectedCal = Calendar.getInstance();
     private Calendar displayCal  = Calendar.getInstance();
-    private JLabel monthYearLbl, selectedDateLbl, slotsTitleLbl, availLbl, resvLbl, occLbl, usageCaption, plateLbl;
-    private JPanel calGrid, slotGrid, myList;
+    private JLabel monthYearLbl, selectedDateLbl, slotsTitleLbl, availLbl, resvLbl, occLbl, usageCaption, plateLbl, clockLbl;
+    private JPanel calGrid, myList, pages;
+    private CardLayout pageLayout;
+    private FloorPlan plan;
+    private JComboBox<String> floorBox;
+    private JLabel pwdLbl;
+    private Park.RoundButton tabMap, tabMine;
     private Park.RingPanel ring;
     private String plate;                       // the driver's plate number for this session
 
@@ -32,8 +37,16 @@ class MainFrame extends JFrame {
     private final List<LiveRow> live = new ArrayList<LiveRow>();
     private final Set<String> notified = new HashSet<String>();
     private int seenVersion = -1;
-    private final Map<String, String> seen = new HashMap<String, String>();   // booking id -> "slot|status"
+    private final Map<String, Snap> seen = new HashMap<String, Snap>();        // booking id -> what it looked like last time
+    private final Map<String, String> seenFines = new HashMap<String, String>();  // fee key -> "paid|pending|kind|fee"
     private boolean seenInit = false;
+    private int seenPriority = -1;
+
+    /** What a booking looked like at the last refresh (used to tell the driver what the admin changed). */
+    private static class Snap {
+        final String slot; final int status; final boolean leave;
+        Snap(String slot, int status, boolean leave) { this.slot = slot; this.status = status; this.leave = leave; }
+    }
 
     private static class LiveRow {
         final DataStore.ReservationInfo info;
@@ -60,6 +73,8 @@ class MainFrame extends JFrame {
             public void actionPerformed(ActionEvent e) {
                 int v = DataStore.version();            // picks up changes made by other running copies
                 if (v != seenVersion) { seenVersion = v; refreshAll(); }
+                clockLbl.setText(Park.clockText());
+                plan.repaint();                                    // slot countdowns on the map
                 tickLive();
             }
         });
@@ -93,13 +108,23 @@ class MainFrame extends JFrame {
         content.setBorder(Park.pad(22, 26, 22, 26));
         content.add(buildHeader(), BorderLayout.NORTH);
 
-        JPanel main = new JPanel(new GridBagLayout()); main.setOpaque(false);
+        // page 1: the parking map (calendar + floor plan). Page 2: my parking (usage + my bookings and fees)
+        JPanel mapPage = new JPanel(new GridBagLayout()); mapPage.setOpaque(false);
         GridBagConstraints gc = new GridBagConstraints();
         gc.fill = GridBagConstraints.BOTH; gc.weighty = 1; gc.gridy = 0;
-        gc.gridx = 0; gc.weightx = 0; gc.insets = new Insets(0, 0, 0, 18); main.add(buildLeft(), gc);
-        gc.gridx = 1; gc.weightx = 1;                                      main.add(buildCenter(), gc);
-        gc.gridx = 2; gc.weightx = 0; gc.insets = new Insets(0, 18, 0, 0); main.add(buildRight(), gc);
-        content.add(main, BorderLayout.CENTER);
+        gc.gridx = 0; gc.weightx = 0; gc.insets = new Insets(0, 0, 0, 18); mapPage.add(buildLeft(), gc);
+        gc.gridx = 1; gc.weightx = 1; gc.insets = new Insets(0, 0, 0, 0);  mapPage.add(buildCenter(), gc);
+
+        JPanel minePage = new JPanel(new GridBagLayout()); minePage.setOpaque(false);
+        gc = new GridBagConstraints();
+        gc.fill = GridBagConstraints.BOTH; gc.weighty = 1; gc.gridy = 0;
+        gc.gridx = 0; gc.weightx = 0; gc.insets = new Insets(0, 0, 0, 18); minePage.add(buildUsageCard(), gc);
+        gc.gridx = 1; gc.weightx = 1; gc.insets = new Insets(0, 0, 0, 0);  minePage.add(buildMineCard(), gc);
+
+        pageLayout = new CardLayout();
+        pages = new JPanel(pageLayout); pages.setOpaque(false);
+        pages.add(mapPage, "map"); pages.add(minePage, "mine");
+        content.add(pages, BorderLayout.CENTER);
 
         root.add(content, BorderLayout.CENTER);
         setContentPane(root);
@@ -110,7 +135,7 @@ class MainFrame extends JFrame {
             private static final long serialVersionUID = 1L;
             protected void paintComponent(Graphics g) {
                 Graphics2D g2 = Park.aa(g);
-                g2.setColor(new Color(12, 12, 28, 205)); g2.fillRect(0, 0, getWidth(), getHeight());
+                g2.setColor(Park.alpha(Park.FIELD_BG, 205)); g2.fillRect(0, 0, getWidth(), getHeight());
                 g2.setColor(Park.BORDER); g2.drawLine(getWidth() - 1, 0, getWidth() - 1, getHeight());
                 g2.dispose();
             }
@@ -145,14 +170,33 @@ class MainFrame extends JFrame {
         Park.Badge avatar = new Park.Badge(shownName.substring(0, 1).toUpperCase(), 40);
         avatar.setAlignmentX(Component.CENTER_ALIGNMENT);
         avatar.setToolTipText(shownName);
-        Park.RoundButton logout = new Park.RoundButton("Logout", new Color(30, 30, 62), Park.TEXT_PRIMARY);
+        Park.RoundButton logout = new Park.RoundButton("Logout", Park.BTN_IDLE, Park.TEXT_PRIMARY);
         logout.setFont(Park.plain(11)); logout.setRadius(10); logout.setOutline(Park.BORDER);
         logout.setPreferredSize(new Dimension(56, 28)); logout.setMaximumSize(new Dimension(56, 28));
         logout.setAlignmentX(Component.CENTER_ALIGNMENT);
         logout.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e) { dispose(); new LoginFrame().setVisible(true); }
+            public void actionPerformed(ActionEvent e) {
+                DataStore.audit("LOGOUT", "User signed out");
+                DataStore.setActor(null);
+                dispose(); new LoginFrame().setVisible(true);
+            }
         });
-        bottom.add(avatar); bottom.add(Box.createVerticalStrut(10)); bottom.add(logout);
+        Park.RoundButton settings = new Park.RoundButton("Settings", Park.BTN_IDLE, Park.TEXT_PRIMARY);
+        settings.setFont(Park.plain(11)); settings.setRadius(10); settings.setOutline(Park.BORDER);
+        settings.setPreferredSize(new Dimension(60, 28)); settings.setMaximumSize(new Dimension(60, 28));
+        settings.setAlignmentX(Component.CENTER_ALIGNMENT);
+        settings.setToolTipText("Edit your information, change your password, delete your account");
+        settings.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent e) {
+                new SettingsDialog(MainFrame.this, username, false,
+                    new Runnable() { public void run() { dispose(); new MainFrame(username).setVisible(true); } },
+                    new Runnable() { public void run() { DataStore.setActor(null); dispose(); new LoginFrame().setVisible(true); } }
+                ).setVisible(true);
+            }
+        });
+        logout.setPreferredSize(new Dimension(60, 28)); logout.setMaximumSize(new Dimension(60, 28));
+        bottom.add(avatar); bottom.add(Box.createVerticalStrut(10)); bottom.add(settings);
+        bottom.add(Box.createVerticalStrut(6)); bottom.add(logout);
 
         sb.add(top, BorderLayout.NORTH); sb.add(mid, BorderLayout.CENTER); sb.add(bottom, BorderLayout.SOUTH);
         return sb;
@@ -161,12 +205,29 @@ class MainFrame extends JFrame {
     private JPanel buildHeader() {
         JPanel h = new JPanel(new BorderLayout()); h.setOpaque(false);
         JPanel left = new JPanel(); left.setOpaque(false); left.setLayout(new BoxLayout(left, BoxLayout.Y_AXIS));
-        left.add(Park.lbl("ParkWise - Parking Overview", Park.bold(24), Park.TEXT_PRIMARY));
+        left.add(Park.lbl("ParkWise - Parking Overview", Park.bold(22), Park.TEXT_PRIMARY));
         left.add(Box.createVerticalStrut(2));
         left.add(Park.lbl("Hello, " + DataStore.getDisplayName(username).split(" ")[0]
                 + ". Pick a date, then choose a slot and a time.", Park.plain(13), Park.TEXT_MUTED));
         h.add(left, BorderLayout.WEST);
-        h.add(Park.lbl("Today  \u00B7  " + Park.today(), Park.plain(13), Park.TEXT_MUTED), BorderLayout.EAST);
+        tabMap = new Park.RoundButton("Parking Map", Park.ACCENT, Color.WHITE);
+        tabMine = new Park.RoundButton("My Parking", Park.BTN_IDLE, Park.TEXT_MUTED);
+        tabMap.setFont(Park.bold(14)); tabMine.setFont(Park.bold(14));
+        tabMap.setRadius(14); tabMine.setRadius(14);
+        tabMap.setPreferredSize(new Dimension(150, 42)); tabMine.setPreferredSize(new Dimension(190, 42));
+        tabMap.addActionListener(Fmt.act(new Runnable() { public void run() { showPage("map"); } }));
+        tabMine.addActionListener(Fmt.act(new Runnable() { public void run() { showPage("mine"); } }));
+        JPanel tabRow = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0)); tabRow.setOpaque(false);
+        tabRow.add(tabMap); tabRow.add(tabMine);
+        JPanel tabWrap = new JPanel(new GridBagLayout()); tabWrap.setOpaque(false); tabWrap.add(tabRow);
+        h.add(tabWrap, BorderLayout.CENTER);
+        clockLbl = Park.clockLabel();
+        clockLbl.setToolTipText("Current date and time");
+        Park.Card clockCard = new Park.Card(new BorderLayout(), 16);
+        clockCard.setBorder(Park.pad(6, 12, 6, 12));
+        clockCard.add(clockLbl, BorderLayout.CENTER);
+        JPanel clockWrap = new JPanel(new GridBagLayout()); clockWrap.setOpaque(false); clockWrap.add(clockCard);
+        h.add(clockWrap, BorderLayout.EAST);
         return h;
     }
 
@@ -184,8 +245,8 @@ class MainFrame extends JFrame {
         card.setBorder(Park.pad(16, 14, 14, 14));
         card.setPreferredSize(new Dimension(280, 322));
 
-        Park.RoundButton prev = new Park.RoundButton("", new Color(30, 30, 62), Park.ACCENT);
-        Park.RoundButton next = new Park.RoundButton("", new Color(30, 30, 62), Park.ACCENT);
+        Park.RoundButton prev = new Park.RoundButton("", Park.BTN_IDLE, Park.ACCENT);
+        Park.RoundButton next = new Park.RoundButton("", Park.BTN_IDLE, Park.ACCENT);
         prev.setArrow(-1); next.setArrow(1);
         prev.setPreferredSize(new Dimension(34, 34)); next.setPreferredSize(new Dimension(34, 34));
         monthYearLbl = Park.lbl("", Park.bold(15), Park.TEXT_PRIMARY);
@@ -220,27 +281,43 @@ class MainFrame extends JFrame {
         JLabel l1 = Park.lbl("SELECTED DATE", Park.bold(11), Park.TEXT_MUTED); l1.setAlignmentX(Component.LEFT_ALIGNMENT);
         selectedDateLbl = Park.lbl(" ", Park.bold(17), Park.TEXT_PRIMARY); selectedDateLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        JLabel l2 = Park.lbl("PLATE NUMBER", Park.bold(11), Park.TEXT_MUTED); l2.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel l2 = Park.lbl("VEHICLE PLATE NUMBER", Park.bold(11), Park.TEXT_MUTED); l2.setAlignmentX(Component.LEFT_ALIGNMENT);
         plateLbl = Park.lbl(" ", Park.bold(17), Park.TEXT_PRIMARY);
-        JLabel change = Park.lbl("Change", Park.bold(12), Park.ACCENT);
+        JLabel change = Park.lbl("Switch / Add", Park.bold(12), Park.ACCENT);
+        change.setToolTipText("Park a different vehicle: pick a saved plate or add a new one");
         change.setBorder(Park.pad(0, 12, 0, 0));
         change.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         change.addMouseListener(new MouseAdapter() {
             public void mouseClicked(MouseEvent e) { promptPlate(); }
         });
         JPanel plateRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0)); plateRow.setOpaque(false);
-        plateRow.add(plateLbl); plateRow.add(change);
+        JLabel editLink = Park.lbl("Edit", Park.bold(12), Park.ACCENT);
+        editLink.setToolTipText("Fix a typo in a saved plate number");
+        editLink.setBorder(Park.pad(0, 10, 0, 0));
+        editLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        editLink.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) { editPlate(); }
+        });
+        plateRow.add(plateLbl); plateRow.add(change); plateRow.add(editLink);
         plateRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         plateRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
         updatePlateLabel();
 
-        JLabel l3 = Park.lbl("RATE", Park.bold(11), Park.TEXT_MUTED); l3.setAlignmentX(Component.LEFT_ALIGNMENT);
-        JLabel rate = Park.lbl(Park.money(Park.RATE) + " / hour", Park.bold(17), Park.ACCENT); rate.setAlignmentX(Component.LEFT_ALIGNMENT);
-        JLabel tip = Park.lbl(Park.lines(
-                "Pick a slot, then choose your time.",
-                "Overtime is billed at " + Park.money(Park.RATE) + "/hr after",
-                "a " + DataStore.GRACE_MINUTES + "-min grace period."),
-            Park.plain(11), Park.TEXT_MUTED);
+        JLabel l3 = Park.lbl("RATES", Park.bold(11), Park.TEXT_MUTED); l3.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel rate = Park.lbl(Park.lines(
+                "Car:  " + Park.moneyShort(Park.CAR_RATE) + "/hr  \u00B7  Reserve " + Park.moneyShort(Park.CAR_RESERVE_FIRST)
+                    + ", then " + Park.moneyShort(Park.CAR_RATE),
+                "Motorcycle:  " + Park.moneyShort(Park.MOTO_RATE) + "/hr  \u00B7  Reserve " + Park.moneyShort(Park.MOTO_RESERVE_FIRST)
+                    + ", then " + Park.moneyShort(Park.MOTO_RATE)),
+                Park.bold(11), Park.ACCENT); rate.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel discount = Park.lbl("PWD / senior citizen reservation rates", Park.bold(11), Park.TEXT_PRIMARY);
+        discount.setAlignmentX(Component.LEFT_ALIGNMENT);
+        discount.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        discount.setToolTipText("Click to see the discounted rates");
+        discount.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) { showDiscountRates(); }
+        });
+        JLabel tip = Park.lbl("A booked slot is closed to others all day.", Park.plain(11), Park.TEXT_MUTED);
         tip.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         col.add(l1); col.add(Box.createVerticalStrut(2)); col.add(selectedDateLbl);
@@ -248,7 +325,8 @@ class MainFrame extends JFrame {
         col.add(l2); col.add(Box.createVerticalStrut(2)); col.add(plateRow);
         col.add(Box.createVerticalStrut(8));
         col.add(l3); col.add(Box.createVerticalStrut(2)); col.add(rate);
-        col.add(Box.createVerticalStrut(8)); col.add(tip);
+        col.add(Box.createVerticalStrut(2)); col.add(discount);
+        col.add(Box.createVerticalStrut(6)); col.add(tip);
         card.add(col, BorderLayout.NORTH);
         return card;
     }
@@ -259,7 +337,7 @@ class MainFrame extends JFrame {
     }
 
     private boolean promptPlate() {
-        String p = Fmt.askPlate(this, plate);
+        String p = Fmt.choosePlate(this, username, plate);
         if (p == null) return false;
         plate = p;
         updatePlateLabel();
@@ -268,33 +346,128 @@ class MainFrame extends JFrame {
 
     private boolean ensurePlate() { return plate != null || promptPlate(); }
 
-    // ----- center column: stats + slot grid -----
+    private void showPage(String name) {
+        boolean map = name.equals("map");
+        tabMap.setFill(map ? Park.ACCENT : Park.BTN_IDLE);   tabMap.setForeground(map ? Color.WHITE : Park.TEXT_MUTED);
+        tabMine.setFill(map ? Park.BTN_IDLE : Park.ACCENT);  tabMine.setForeground(map ? Park.TEXT_MUTED : Color.WHITE);
+        pageLayout.show(pages, name);
+    }
+
+    // ----- center column: stats + floor plan -----
     private JPanel buildCenter() {
-        JPanel p = new JPanel(new BorderLayout(0, 18)); p.setOpaque(false);
+        JPanel p = new JPanel(new BorderLayout(0, 16)); p.setOpaque(false);
 
         JPanel stats = new JPanel(new GridLayout(1, 3, 14, 0)); stats.setOpaque(false);
-        stats.setPreferredSize(new Dimension(100, 84));
+        stats.setPreferredSize(new Dimension(100, 76));
         availLbl = new JLabel(); resvLbl = new JLabel(); occLbl = new JLabel();
         stats.add(statCard("Available", Park.SLOT_AVAILABLE, availLbl));
         stats.add(statCard("Reserved",  Park.SLOT_RESERVED,  resvLbl));
         stats.add(statCard("Occupied",  Park.SLOT_OCCUPIED,  occLbl));
         p.add(stats, BorderLayout.NORTH);
 
-        Park.Card slotsCard = new Park.Card(new BorderLayout(0, 14), 22);
-        slotsCard.setBorder(Park.pad(18, 20, 20, 20));
-        slotsTitleLbl = Park.lbl("Parking Slots", Park.bold(17), Park.TEXT_PRIMARY);
+        Park.Card slotsCard = new Park.Card(new BorderLayout(0, 8), 22);
+        slotsCard.setBorder(Park.pad(14, 16, 12, 16));
 
-        JPanel legend = new JPanel(new FlowLayout(FlowLayout.RIGHT, 14, 0)); legend.setOpaque(false);
-        legend.add(Park.lbl("\u2022 Free all day", Park.plain(12), Park.SLOT_AVAILABLE));
-        legend.add(Park.lbl("\u2022 Has bookings",  Park.plain(12), Park.SLOT_RESERVED));
-        legend.add(Park.lbl("\u2022 Car parked",  Park.plain(12), Park.SLOT_OCCUPIED));
+        floorBox = new JComboBox<String>(Park.FLOOR_NAMES);
+        Fmt.styleCombo(floorBox);
+        floorBox.setPreferredSize(new Dimension(200, 38));
+        floorBox.addActionListener(Fmt.act(new Runnable() {
+            public void run() { plan.setFloor(floorBox.getSelectedIndex() + 1); refreshSlots(); refreshStats(); }
+        }));
+        slotsTitleLbl = Park.lbl("Parking Map", Park.bold(16), Park.TEXT_PRIMARY);
+        pwdLbl = Park.lbl(" ", Park.bold(12), Park.ACCENT);
+        pwdLbl.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        pwdLbl.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) { registerPriority(); }
+        });
+        JPanel leftHead = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0)); leftHead.setOpaque(false);
+        JLabel fl = Park.lbl("Floor", Park.bold(12), Park.TEXT_MUTED);
+        leftHead.add(fl); leftHead.add(floorBox); leftHead.add(slotsTitleLbl);
         JPanel head = new JPanel(new BorderLayout()); head.setOpaque(false);
-        head.add(slotsTitleLbl, BorderLayout.WEST); head.add(legend, BorderLayout.EAST);
+        head.add(leftHead, BorderLayout.WEST);
+        JPanel pwdWrap = new JPanel(new GridBagLayout()); pwdWrap.setOpaque(false); pwdWrap.add(pwdLbl);
+        head.add(pwdWrap, BorderLayout.EAST);
 
-        slotGrid = new JPanel(new GridLayout(4, 5, 12, 12)); slotGrid.setOpaque(false);
-        slotsCard.add(head, BorderLayout.NORTH); slotsCard.add(slotGrid, BorderLayout.CENTER);
+        plan = new FloorPlan();
+        plan.setListener(new FloorPlan.Listener() {
+            public void slotClicked(String slotId) { onSlotClick(Park.fmt(selectedCal), slotId); }
+        });
+
+        JPanel legend = new JPanel(new FlowLayout(FlowLayout.CENTER, 18, 0)); legend.setOpaque(false);
+        legend.add(Park.lbl("\u2022 Available", Park.plain(12), Park.SLOT_AVAILABLE));
+        legend.add(Park.lbl("\u2022 Reserved / pending",  Park.plain(12), Park.SLOT_RESERVED));
+        legend.add(Park.lbl("\u2022 Vehicle parked",  Park.plain(12), Park.SLOT_OCCUPIED));
+        legend.add(Park.lbl("\u25A0 PWD / Senior slot (verified drivers only)",  Park.plain(12), new Color(70, 140, 255)));
+        legend.add(Park.lbl("Hover a slot for its remaining time", Park.plain(12), Park.TEXT_MUTED));
+
+        slotsCard.add(head, BorderLayout.NORTH); slotsCard.add(plan, BorderLayout.CENTER); slotsCard.add(legend, BorderLayout.SOUTH);
         p.add(slotsCard, BorderLayout.CENTER);
         return p;
+    }
+
+    private void showDiscountRates() {
+        JOptionPane.showMessageDialog(this,
+            "PWD / senior citizen reservation rates (for drivers with a verified ID):\n\n"
+            + "Car:  " + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour\n"
+            + "Motorcycle:  " + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour\n\n"
+            + "Regular reservations: car " + Park.moneyShort(Park.CAR_RESERVE_FIRST) + " then " + Park.moneyShort(Park.CAR_RATE)
+            + ", motorcycle " + Park.moneyShort(Park.MOTO_RESERVE_FIRST) + " then " + Park.moneyShort(Park.MOTO_RATE) + ".\n"
+            + "Park Now and overtime use the regular hourly rate (car " + Park.moneyShort(Park.CAR_RATE)
+            + ", motorcycle " + Park.moneyShort(Park.MOTO_RATE) + ").",
+            "Rates", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void editPlate() {
+        String[] r = Fmt.editPlate(this, username, plate);
+        if (r == null) return;
+        if (r[0].equals(plate)) plate = r[1];
+        updatePlateLabel();
+        refreshAll();
+        JOptionPane.showMessageDialog(this, "Plate number changed from " + Fmt.formatPlate(r[0]) + " to " + Fmt.formatPlate(r[1])
+            + ".\nYour bookings were updated and the admin was notified.", "Plate Number Updated", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** Send a PWD or senior citizen ID to the admin for verification. */
+    private void registerPriority() {
+        int st = DataStore.priorityStatus(username);
+        if (st == DataStore.P_VERIFIED) return;
+        if (st == DataStore.P_PENDING) {
+            JOptionPane.showMessageDialog(this, "Your " + DataStore.priorityName(DataStore.priorityType(username))
+                + " ID was sent and is waiting for the admin to verify it.", "Verification Pending", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        final JComboBox<String> type = new JComboBox<String>(new String[]{"PWD (Person with Disability)", "Senior citizen (age 60 and above)"});
+        final JTextField idF = new JTextField(18);
+        final JTextField birthF = new JTextField(18);
+        birthF.setEnabled(false);
+        type.addActionListener(Fmt.act(new Runnable() {
+            public void run() { birthF.setEnabled(type.getSelectedIndex() == 1); }
+        }));
+        final AttachPanel proof = new AttachPanel("id", "Attach ID photo", "Required: a clear photo of the ID");
+        JPanel pn = new JPanel(new GridLayout(0, 1, 0, 6));
+        pn.add(new JLabel("<html>Register your PWD or senior citizen ID.<br>The admin verifies it before you can use the PWD / senior<br>citizen slots and the discounted reservation rates.<br>Parking in those slots without a verified ID is charged "
+            + Park.money(Park.PWD_VIOLATION) + ".</html>"));
+        pn.add(type);
+        pn.add(new JLabel("ID number"));  pn.add(idF);
+        pn.add(new JLabel("Birth date (MM/DD/YYYY) - seniors only"));  pn.add(birthF);
+        pn.add(new JLabel("Photo of the ID (the admin checks it)"));  pn.add(proof);
+        while (true) {
+            int ok = JOptionPane.showConfirmDialog(this, pn, "PWD / Senior Citizen ID", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE);
+            if (ok != JOptionPane.OK_OPTION) { proof.clear(); return; }
+            if (!proof.hasPicture()) { JOptionPane.showMessageDialog(this, "Attach a clear photo of your ID.", "PWD / Senior Citizen ID", JOptionPane.WARNING_MESSAGE); continue; }
+            boolean senior = type.getSelectedIndex() == 1;
+            String birth = "";
+            if (senior) {
+                birth = Fmt.parseBirth(birthF.getText());
+                if (birth == null) { JOptionPane.showMessageDialog(this, "Enter your birth date as MM/DD/YYYY.", "Senior Citizen", JOptionPane.WARNING_MESSAGE); continue; }
+            }
+            String err = DataStore.setPriority(username, senior ? DataStore.PRIORITY_SENIOR : DataStore.PRIORITY_PWD, idF.getText(), birth, proof.stored());
+            if (err != null) { JOptionPane.showMessageDialog(this, err, "PWD / Senior Citizen ID", JOptionPane.WARNING_MESSAGE); continue; }
+            proof.release();
+            JOptionPane.showMessageDialog(this, "ID sent. The admin will verify it and you will be notified.", "ID Sent", JOptionPane.INFORMATION_MESSAGE);
+            refreshSlots();
+            return;
+        }
     }
 
     private JPanel statCard(String title, Color c, JLabel value) {
@@ -308,35 +481,37 @@ class MainFrame extends JFrame {
         return card;
     }
 
-    // ----- right column: usage ring + my parking -----
-    private JPanel buildRight() {
-        JPanel p = new JPanel(new BorderLayout(0, 18)); p.setOpaque(false);
-        p.setPreferredSize(new Dimension(320, 100));
-
+    // ----- page 2: usage ring + my parking -----
+    private JPanel buildUsageCard() {
         Park.Card usage = new Park.Card(new BorderLayout(0, 4), 20);
         usage.setBorder(Park.pad(16, 16, 16, 16));
-        usage.setPreferredSize(new Dimension(320, 250));
+        usage.setPreferredSize(new Dimension(300, 100));
         ring = new Park.RingPanel();
         usageCaption = Park.lbl(" ", Park.plain(12), Park.TEXT_MUTED);
         usageCaption.setHorizontalAlignment(SwingConstants.CENTER);
-        usage.add(Park.lbl("Slot Usage", Park.bold(15), Park.TEXT_PRIMARY), BorderLayout.NORTH);
+        usage.add(Park.lbl("Slot Usage (selected floor and date)", Park.bold(14), Park.TEXT_PRIMARY), BorderLayout.NORTH);
         usage.add(ring, BorderLayout.CENTER); usage.add(usageCaption, BorderLayout.SOUTH);
-        p.add(usage, BorderLayout.NORTH);
+        JPanel wrap = new JPanel(new BorderLayout()); wrap.setOpaque(false);
+        wrap.setPreferredSize(new Dimension(300, 100));
+        wrap.add(usage, BorderLayout.NORTH);
+        usage.setPreferredSize(new Dimension(300, 300));
+        return wrap;
+    }
 
+    private JPanel buildMineCard() {
         Park.Card mine = new Park.Card(new BorderLayout(0, 10), 20);
-        mine.setBorder(Park.pad(16, 16, 16, 16));
+        mine.setBorder(Park.pad(16, 18, 16, 18));
         myList = new JPanel(); myList.setOpaque(false); myList.setLayout(new BoxLayout(myList, BoxLayout.Y_AXIS));
-        JPanel wrapper = new JPanel(new BorderLayout()); wrapper.setOpaque(false);
+        JPanel wrapper = new Park.ScrollView(new BorderLayout());
         wrapper.add(myList, BorderLayout.NORTH);
         JScrollPane sp = new JScrollPane(wrapper);
         sp.setOpaque(false); sp.getViewport().setOpaque(false);
         sp.setBorder(BorderFactory.createEmptyBorder());
         sp.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         sp.getVerticalScrollBar().setUnitIncrement(14);
-        mine.add(Park.lbl("My Parking", Park.bold(15), Park.TEXT_PRIMARY), BorderLayout.NORTH);
+        mine.add(Park.lbl("My Parking", Park.bold(17), Park.TEXT_PRIMARY), BorderLayout.NORTH);
         mine.add(sp, BorderLayout.CENTER);
-        p.add(mine, BorderLayout.CENTER);
-        return p;
+        return mine;
     }
 
     // ---------- refreshing ----------
@@ -345,38 +520,93 @@ class MainFrame extends JFrame {
         refreshCal(); refreshSlots(); refreshStats(); refreshMine();
     }
 
-    /** Compares my bookings with the last look and tells the driver what the admin changed. */
+    /** Compares my bookings and fees with the last look and tells the driver what the admin changed. */
     private void detectChanges() {
-        Map<String, String> now = new HashMap<String, String>();
+        Map<String, Snap> now = new HashMap<String, Snap>();
         for (DataStore.ReservationInfo r : DataStore.getReservationsForUser(username))
-            now.put(r.id, r.slot + "|" + r.status);
+            now.put(r.id, new Snap(r.slot, r.status, r.hasLeaveRequest()));
+        Map<String, String> nowF = new HashMap<String, String>();
+        Map<String, DataStore.Fine> fineByKey = new HashMap<String, DataStore.Fine>();
+        for (DataStore.Fine f : DataStore.getFinesForUser(username)) {
+            nowF.put(f.key(), (f.paid ? "1" : "0") + "|" + (f.payPending ? "1" : "0"));
+            fineByKey.put(f.key(), f);
+        }
         if (seenInit) {
-            for (Map.Entry<String, String> e : seen.entrySet()) {
-                String[] old = e.getValue().split("\\|");
-                String curS = now.get(e.getKey());
-                if (curS == null) {
-                    if (old[1].equals("3"))
-                        notice("Payment Not Approved", "Your counter payment request for slot " + old[0]
-                                + " was declined by the admin.\nThe slot has been released.", JOptionPane.WARNING_MESSAGE);
-                    else if (old[1].equals("2"))
-                        notice("Parking Ended", "An administrator ended your parking session in slot " + old[0]
+            for (Map.Entry<String, Snap> e : seen.entrySet()) {
+                Snap old = e.getValue();
+                Snap cur = now.get(e.getKey());
+                if (cur == null) {
+                    if (old.status == DataStore.PENDING)
+                        notice("Payment Not Approved", "The admin could not validate your payment for slot " + old.slot
+                                + " (for example, the reference number could not be verified).\n"
+                                + "The request was declined and the slot has been released.\n"
+                                + "Please book again, or ask the admin for help.", JOptionPane.WARNING_MESSAGE);
+                    else if (old.status == DataStore.PARKED && old.leave)
+                        notice("Leave Approved", "The admin validated your overtime payment.\n"
+                                + "You may now drive out. Slot " + old.slot + " is free again. Thank you for using ParkWise!",
+                                JOptionPane.INFORMATION_MESSAGE);
+                    else if (old.status == DataStore.PARKED)
+                        notice("Parking Ended", "An administrator ended your parking session in slot " + old.slot
                                 + ".\nAny overtime is shown under My Parking.", JOptionPane.WARNING_MESSAGE);
                     else
-                        notice("Reservation Removed", "Your reservation for slot " + old[0]
+                        notice("Reservation Removed", "Your reservation for slot " + old.slot
                                 + " was removed by an administrator.", JOptionPane.WARNING_MESSAGE);
                 } else {
-                    String[] cur = curS.split("\\|");
-                    if (old[1].equals("3") && cur[1].equals("1"))
-                        notice("Payment Approved", "The admin approved your counter payment for slot " + cur[0]
-                                + ".\nYou may now park. Press \"Park Now\" under My Parking when you are in the slot.",
+                    DataStore.ReservationInfo ri = DataStore.getById(e.getKey());
+                    if (old.status == DataStore.PENDING && cur.status == DataStore.RESERVED && ri != null)
+                        notice("Payment Approved", "The admin validated your payment.\nSlot " + cur.slot
+                                + " is now RESERVED for you:\n" + ri.date + ", " + Fmt.timeRange(ri.startMin, ri.endMin())
+                                + "\nPress \"Park Now\" under My Parking when you arrive (check-in opens "
+                                + DataStore.CHECKIN_EARLY_MIN + " min before).", JOptionPane.INFORMATION_MESSAGE);
+                    if (old.status == DataStore.PENDING && cur.status == DataStore.PARKED && ri != null)
+                        notice("Payment Approved - You Are Parked", "The admin validated your payment.\nYour parking time has "
+                                + "started automatically and slot " + cur.slot + " is now OCCUPIED.\n"
+                                + "Paid time: " + ri.hours + "h (ends " + Fmt.time(ri.endMin() % 1440)
+                                + "). Watch the remaining time under My Parking.\nPress Leave when you drive out.",
                                 JOptionPane.INFORMATION_MESSAGE);
-                    if (!old[0].equals(cur[0]))
-                        notice("Slot Changed", "An administrator moved your booking from slot " + old[0]
-                                + " to slot " + cur[0] + " to match where your car is.", JOptionPane.INFORMATION_MESSAGE);
+                    if (old.status == DataStore.PARKED && cur.status == DataStore.PARKED && old.leave && !cur.leave)
+                        notice("Overtime Payment Not Validated", "The admin could not validate your overtime payment for slot "
+                                + cur.slot + ".\nCheck the reference number and press Leave again to pay.",
+                                JOptionPane.WARNING_MESSAGE);
+                    if (!old.slot.equals(cur.slot))
+                        notice("Slot Changed", "An administrator moved your booking from slot " + old.slot
+                                + " to slot " + cur.slot + " to match where your car is.", JOptionPane.INFORMATION_MESSAGE);
+                }
+            }
+            for (Map.Entry<String, String> e : nowF.entrySet()) {
+                String o = seenFines.get(e.getKey());
+                String c = e.getValue();
+                DataStore.Fine f = fineByKey.get(e.getKey());
+                if (o == null) {
+                    if (c.startsWith("0"))
+                        notice("New Charge On Your Account", f.kind + " of " + Park.money(f.fee) + " (slot " + f.slot + ", "
+                                + Park.shortDate(f.date) + ") was billed to your account.\n"
+                                + "Pay it under My Parking. The admin validates the payment.", JOptionPane.WARNING_MESSAGE);
+                } else {
+                    if (o.equals("0|1") && c.equals("1|0"))
+                        notice("Payment Validated", "The admin validated your payment of " + Park.money(f.fee)
+                                + " (" + f.kind + ", slot " + f.slot + "). Thank you!", JOptionPane.INFORMATION_MESSAGE);
+                    if (o.equals("0|1") && c.equals("0|0"))
+                        notice("Payment Not Validated", "The admin could not validate your payment of " + Park.money(f.fee)
+                                + " (" + f.kind + ", slot " + f.slot + ").\nCheck the reference number and pay again from My Parking.",
+                                JOptionPane.WARNING_MESSAGE);
                 }
             }
         }
-        seen.clear(); seen.putAll(now); seenInit = true;
+        int pstNow = DataStore.priorityStatus(username);
+        if (seenInit && seenPriority != pstNow) {
+            String pn = DataStore.priorityName(DataStore.priorityType(username));
+            if (pstNow == DataStore.P_VERIFIED)
+                notice("ID Verified", "The admin verified your " + pn + " ID.\nYou can now use the PWD / senior citizen slots and the discounted reservation rates.",
+                        JOptionPane.INFORMATION_MESSAGE);
+            else if (pstNow == DataStore.P_REJECTED)
+                notice("ID Not Verified", "The admin could not verify your " + pn + " ID.\nPlease check the details and register your ID again, or ask the admin.",
+                        JOptionPane.WARNING_MESSAGE);
+        }
+        seenPriority = pstNow;
+        seen.clear(); seen.putAll(now);
+        seenFines.clear(); seenFines.putAll(nowF);
+        seenInit = true;
     }
 
     private void refreshCal() {
@@ -392,7 +622,7 @@ class MainFrame extends JFrame {
         for (int d = 1; d <= days; d++) {
             final Calendar dc = (Calendar) displayCal.clone(); dc.set(Calendar.DAY_OF_MONTH, d);
             boolean past = dc.before(today) && !sameDay(dc, today);
-            Park.RoundButton btn = new Park.RoundButton(String.valueOf(d), new Color(30, 30, 62), Park.TEXT_PRIMARY);
+            Park.RoundButton btn = new Park.RoundButton(String.valueOf(d), Park.BTN_IDLE, Park.TEXT_PRIMARY);
             btn.setFont(Park.plain(12)); btn.setRadius(10);
             if (sameDay(dc, selectedCal)) { btn.setFill(Park.ACCENT); btn.setForeground(Color.WHITE); btn.setFont(Park.bold(12)); }
             else if (sameDay(dc, today))  { btn.setOutline(Park.ACCENT); }
@@ -418,50 +648,37 @@ class MainFrame extends JFrame {
     private void refreshSlots() {
         String date = Park.fmt(selectedCal);
         selectedDateLbl.setText(date);
-        slotsTitleLbl.setText("Parking Slots  \u00B7  " + Park.shortDate(date));
-        slotGrid.removeAll();
-        for (String slot : Park.SLOTS) slotGrid.add(buildSlotBtn(date, slot));
-        slotGrid.revalidate(); slotGrid.repaint();
-    }
-
-    private TimeSlotButton buildSlotBtn(final String date, final String slot) {
-        List<DataStore.ReservationInfo> list = DataStore.getBookings(date, slot);
-        int status = DataStore.getSlotStatus(date, slot);
-        boolean mine = false;
-        StringBuilder tip = new StringBuilder("<html>");
-        if (list.isEmpty()) {
-            tip.append("Free all day. Click to book slot ").append(slot).append(".");
-        } else {
-            tip.append("<b>Slot ").append(slot).append(" is booked at:</b>");
-            for (DataStore.ReservationInfo r : list) {
-                boolean me = r.user.equals(username);
-                if (me) mine = true;
-                tip.append("<br>").append(Fmt.timeRange(r.startMin, r.endMin())).append(me ? "  (you)" : "");
-            }
-            tip.append("<br>Click to book another time.");
+        int floor = floorBox.getSelectedIndex() + 1;
+        slotsTitleLbl.setText("\u00B7  " + Park.shortDate(date));
+        Map<String, DataStore.ReservationInfo> infos = new HashMap<String, DataStore.ReservationInfo>();
+        for (String slot : Park.slotsOnFloor(floor)) {
+            DataStore.ReservationInfo info = DataStore.activeBooking(date, slot);
+            if (info != null) infos.put(slot, info);
         }
-        tip.append("</html>");
-        TimeSlotButton btn = new TimeSlotButton(slot, status, mine, list.size());
-        btn.setToolTipText(tip.toString());
-        btn.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e) { onSlotClick(date, slot); }
-        });
-        return btn;
+        int pst = DataStore.priorityStatus(username);
+        String pname = DataStore.priorityName(DataStore.priorityType(username));
+        plan.setData(username, pst == DataStore.P_VERIFIED, infos);
+        if (pst == DataStore.P_VERIFIED) { pwdLbl.setText(pname + " \u2713 verified  (priority slots + discount)"); pwdLbl.setForeground(Park.SLOT_AVAILABLE); }
+        else if (pst == DataStore.P_PENDING) { pwdLbl.setText(pname + " ID waiting for admin verification"); pwdLbl.setForeground(Park.WARNING); }
+        else if (pst == DataStore.P_REJECTED) { pwdLbl.setText(pname + " ID was not verified - register again"); pwdLbl.setForeground(Park.DANGER); }
+        else { pwdLbl.setText("PWD / senior citizen? Register your ID"); pwdLbl.setForeground(Park.ACCENT); }
+        pwdLbl.setCursor(pst == DataStore.P_VERIFIED ? Cursor.getDefaultCursor() : Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
     }
 
     private void refreshStats() {
         String date = Park.fmt(selectedCal);
+        int floor = floorBox.getSelectedIndex() + 1;
         int resv = 0, occ = 0;
-        for (String s : Park.SLOTS) {
+        for (String s : Park.slotsOnFloor(floor)) {
             int st = DataStore.getSlotStatus(date, s);
             if (st == 1) resv++; else if (st == 2) occ++;
         }
-        int total = Park.SLOTS.length;
+        int total = Park.SLOTS_PER_FLOOR;
         availLbl.setText(String.valueOf(total - resv - occ));
         resvLbl.setText(String.valueOf(resv));
         occLbl.setText(String.valueOf(occ));
         ring.setPercent((resv + occ) * 100 / total);
-        usageCaption.setText((resv + occ) + " of " + total + " slots have bookings");
+        usageCaption.setText((resv + occ) + " of " + total + " slots on " + Park.floorName(floor) + " have bookings");
     }
 
     private JLabel sectionLabel(String t) {
@@ -487,7 +704,7 @@ class MainFrame extends JFrame {
         });
 
         if (!unpaid.isEmpty()) {
-            myList.add(sectionLabel("UNPAID OVERTIME FEES"));
+            myList.add(sectionLabel("UNPAID FEES AND PENALTIES"));
             for (DataStore.Fine f : unpaid) { myList.add(buildFineRow(f)); myList.add(Box.createVerticalStrut(8)); }
             if (!list.isEmpty()) { myList.add(Box.createVerticalStrut(4)); myList.add(sectionLabel("BOOKINGS")); }
         }
@@ -501,6 +718,8 @@ class MainFrame extends JFrame {
             myList.add(buildRow(info)); myList.add(Box.createVerticalStrut(8));
         }
         myList.revalidate(); myList.repaint();
+        int n = list.size() + unpaid.size();
+        tabMine.setText("My Parking" + (n > 0 ? " (" + n + ")" : ""));
         tickLive();
     }
 
@@ -509,11 +728,11 @@ class MainFrame extends JFrame {
         boolean pending = info.status == DataStore.PENDING;
         int height = parked ? 96 : 80;
         Park.Card row = new Park.Card(new BorderLayout(8, 0), 14);
-        row.setFill(new Color(14, 14, 32)); row.setBorder(Park.pad(8, 12, 8, 10));
+        row.setFill(Park.BG_PANEL); row.setBorder(Park.pad(8, 12, 8, 10));
         row.setPreferredSize(new Dimension(10, height)); row.setMaximumSize(new Dimension(Integer.MAX_VALUE, height));
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
         Color c = parked ? Park.SLOT_OCCUPIED : pending ? Park.WARNING : Park.SLOT_RESERVED;
-        String word = parked ? "Parked" : pending ? "Awaiting approval" : "Reserved";
+        String word = parked ? (info.hasLeaveRequest() ? "Leaving (payment sent)" : "Parked") : pending ? "Awaiting admin" : "Reserved";
 
         JPanel text = new JPanel(); text.setOpaque(false); text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
         text.add(Park.lbl("Slot " + info.slot + "  \u00B7  " + word, Park.bold(13), c));
@@ -529,13 +748,15 @@ class MainFrame extends JFrame {
         }
 
         String label; Color fill; Color fg;
-        if (parked)       { label = "Leave";    fill = Park.SLOT_OCCUPIED; fg = Color.WHITE; }
-        else if (pending) { label = "Cancel";   fill = new Color(30, 30, 62); fg = Park.TEXT_PRIMARY; }
+        if (parked && info.hasLeaveRequest())
+                          { label = "Waiting";  fill = Park.BTN_IDLE; fg = Park.TEXT_PRIMARY; }
+        else if (parked)  { label = "Leave";    fill = Park.SLOT_OCCUPIED; fg = Color.WHITE; }
+        else if (pending) { label = "Cancel";   fill = Park.BTN_IDLE; fg = Park.TEXT_PRIMARY; }
         else if (info.canCheckIn(System.currentTimeMillis()))
                           { label = "Park Now"; fill = Park.ACCENT; fg = Color.WHITE; }
-        else              { label = "Manage";   fill = new Color(30, 30, 62); fg = Park.TEXT_PRIMARY; }
+        else              { label = "Manage";   fill = Park.BTN_IDLE; fg = Park.TEXT_PRIMARY; }
         Park.RoundButton btn = new Park.RoundButton(label, fill, fg);
-        if (fill.equals(new Color(30, 30, 62))) btn.setOutline(Park.BORDER);
+        if (fill.equals(Park.BTN_IDLE)) btn.setOutline(Park.BORDER);
         btn.setFont(Park.bold(11)); btn.setRadius(10); btn.setPreferredSize(new Dimension(70, 30));
         btn.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent e) { manageBooking(info.id); }
@@ -548,26 +769,24 @@ class MainFrame extends JFrame {
 
     private JPanel buildFineRow(final DataStore.Fine f) {
         Park.Card row = new Park.Card(new BorderLayout(8, 0), 14);
-        row.setFill(new Color(44, 16, 30)); row.setLine(Park.DANGER);
+        row.setFill(Park.FINE_BG); row.setLine(Park.DANGER);
         row.setBorder(Park.pad(8, 12, 8, 10));
         row.setPreferredSize(new Dimension(10, 62)); row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 62));
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
 
+        String detail = "Leave penalty".equals(f.kind) ? "Leave button misuse"
+                      : "PWD violation".equals(f.kind) ? "Parked in a PWD slot" : f.overtimeHours + "h over";
         JPanel text = new JPanel(); text.setOpaque(false); text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
-        text.add(Park.lbl("Overtime fee  " + Park.money(f.fee), Park.bold(13), Park.DANGER));
-        text.add(Park.lbl("Slot " + f.slot + "  \u00B7  " + Park.shortDate(f.date) + "  \u00B7  " + f.overtimeHours + "h over",
-            Park.plain(11), Park.TEXT_MUTED));
+        text.add(Park.lbl(("Overtime".equals(f.kind) ? "Overtime fee" : f.kind) + "  " + Park.money(f.fee), Park.bold(13), Park.DANGER));
+        text.add(Park.lbl("Slot " + f.slot + "  \u00B7  " + Park.shortDate(f.date) + "  \u00B7  "
+                + detail, Park.plain(11), Park.TEXT_MUTED));
+        if (f.payPending) text.add(Park.lbl("Payment sent - admin is checking", Park.plain(11), Park.WARNING));
 
-        Park.RoundButton pay = new Park.RoundButton("Pay", Park.ACCENT, Color.WHITE);
-        pay.setFont(Park.bold(11)); pay.setRadius(10); pay.setPreferredSize(new Dimension(62, 30));
+        Park.RoundButton pay = new Park.RoundButton(f.payPending ? "Waiting" : "Pay", Park.ACCENT, Color.WHITE);
+        pay.setFont(Park.bold(11)); pay.setRadius(10); pay.setPreferredSize(new Dimension(70, 30));
+        pay.setEnabled(!f.payPending);
         pay.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e) {
-                int ok = JOptionPane.showConfirmDialog(MainFrame.this,
-                    "Pay the overtime fee of " + Park.money(f.fee) + " for slot " + f.slot
-                    + " (" + f.date + ")?\nPay it at the counter, then confirm here.",
-                    "Pay Overtime Fee", JOptionPane.YES_NO_OPTION);
-                if (ok == JOptionPane.YES_OPTION) { DataStore.payFine(f); refreshMine(); }
-            }
+            public void actionPerformed(ActionEvent e) { payFee(f); }
         });
         JPanel east = new JPanel(new GridBagLayout()); east.setOpaque(false); east.add(pay);
 
@@ -575,12 +794,31 @@ class MainFrame extends JFrame {
         return row;
     }
 
+    private void payFee(DataStore.Fine f) {
+        PayDialog d = new PayDialog(this, "Pay " + f.kind,
+                "Slot " + f.slot + "  \u00B7  " + f.date + "\nThe admin validates your payment before it is final.",
+                f.fee, true);
+        d.setVisible(true);
+        if (!d.submitted) return;
+        String err = DataStore.submitFinePayment(f, d.mode, d.ref, d.receipt);
+        if (err != null) {
+            JOptionPane.showMessageDialog(this, err, "Could Not Send Payment", JOptionPane.WARNING_MESSAGE);
+        } else {
+            JOptionPane.showMessageDialog(this, "Payment sent. The admin will validate it and you will be notified.",
+                    "Payment Sent", JOptionPane.INFORMATION_MESSAGE);
+        }
+        refreshMine();
+    }
+
     // ---------- live parking timer ----------
     private void tickLive() {
         long now = System.currentTimeMillis();
         for (LiveRow lr : live) {
             long rem = lr.info.remainingMillis(now);
-            if (rem >= 0) {
+            if (lr.info.hasLeaveRequest()) {
+                lr.lbl.setText("Overtime payment sent - waiting for admin");
+                lr.lbl.setForeground(Park.WARNING);
+            } else if (rem >= 0) {
                 lr.lbl.setText(Park.hms(rem) + " left");
                 lr.lbl.setForeground(rem <= 5 * 60000L ? Park.WARNING : Park.SUCCESS);
             } else {
@@ -595,7 +833,7 @@ class MainFrame extends JFrame {
                 notice("Parking Time Is Up",
                     "Your paid parking time for slot " + r.slot + " has ended.\n"
                     + "After a " + DataStore.GRACE_MINUTES + "-minute grace period, every extra hour is billed at "
-                    + Park.money(Park.RATE) + ".\nPlease leave the slot from My Parking when you drive out.",
+                    + Park.money(Park.rateOf(r.slot)) + ".\nTo leave, pay the extra charge under My Parking and wait for the admin to validate it.",
                     JOptionPane.WARNING_MESSAGE);
             }
         }
@@ -613,36 +851,34 @@ class MainFrame extends JFrame {
     }
 
     // ---------- actions ----------
-    private List<DataStore.ReservationInfo> myBookings(String date, String slot) {
-        List<DataStore.ReservationInfo> mine = new ArrayList<DataStore.ReservationInfo>();
-        for (DataStore.ReservationInfo r : DataStore.getBookings(date, slot))
-            if (r.user.equals(username)) mine.add(r);
-        return mine;
-    }
-
     private void onSlotClick(String date, String slot) {
-        List<DataStore.ReservationInfo> mine = myBookings(date, slot);
-        if (!mine.isEmpty()) {
-            StringBuilder sb = new StringBuilder("You already have a booking on slot " + slot + ":\n");
-            for (DataStore.ReservationInfo r : mine) sb.append("  ").append(Fmt.timeRange(r.startMin, r.endMin())).append('\n');
-            Object[] opts = {"Manage My Booking", "Book Another Time", "Close"};
-            int ch = JOptionPane.showOptionDialog(this, sb.toString(), "Slot " + slot,
-                JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, opts, opts[0]);
-            if (ch == 0) {
-                DataStore.ReservationInfo pick = mine.get(0);
-                if (mine.size() > 1) {
-                    String[] labels = new String[mine.size()];
-                    for (int i = 0; i < labels.length; i++)
-                        labels[i] = Fmt.timeRange(mine.get(i).startMin, mine.get(i).endMin());
-                    Object sel = JOptionPane.showInputDialog(this, "Which booking?", "Slot " + slot,
-                        JOptionPane.QUESTION_MESSAGE, null, labels, labels[0]);
-                    if (sel == null) return;
-                    for (int i = 0; i < labels.length; i++) if (labels[i].equals(sel)) pick = mine.get(i);
-                }
-                manageBooking(pick.id);
-                return;
-            }
-            if (ch != 1) return;
+        long now = System.currentTimeMillis();
+        DataStore.ReservationInfo act = DataStore.activeBooking(date, slot);
+        if (act != null) {
+            if (act.user.equals(username)) { manageBooking(act.id); return; }
+            boolean parked = act.status == DataStore.PARKED;
+            String line = parked
+                ? "A car is parked here" + (act.remainingMillis(now) >= 0
+                    ? ". Paid time ends in " + Park.hms(act.remainingMillis(now)) + "."
+                    : " and has stayed past its paid time.")
+                : "It is " + (act.status == DataStore.PENDING ? "waiting for payment approval" : "reserved")
+                    + " (" + Fmt.timeRange(act.startMin, act.endMin()) + ").";
+            JOptionPane.showMessageDialog(this,
+                "Slot " + slot + " is not available on " + date + ".\n" + line + "\n\n"
+                + "A booked slot is closed to other drivers for the whole day, so a car that stays longer\n"
+                + "than paid can never overlap another booking. Please choose another slot.",
+                "Slot " + slot + " Unavailable", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        if (Park.isPwdSlot(slot) && !DataStore.isPriorityUser(username)) {
+            int st = DataStore.priorityStatus(username);
+            JOptionPane.showMessageDialog(this,
+                "Slot " + slot + " is a PWD / senior citizen slot, reserved for drivers with a verified PWD or senior citizen ID.\n\n"
+                + (st == DataStore.P_PENDING ? "Your ID is waiting for the admin to verify it.\n"
+                   : "Register your ID (top right of the map) and wait for the admin to verify it.\n")
+                + "Parking in these slots without a verified ID is charged " + Park.money(Park.PWD_VIOLATION) + ".",
+                "PWD / Senior Citizen Slot", JOptionPane.INFORMATION_MESSAGE);
+            return;
         }
         if (!ensurePlate()) return;
         openBooking(date, slot);
@@ -652,16 +888,17 @@ class MainFrame extends JFrame {
         boolean today = date.equals(Park.today());
         int nowMin = Fmt.minuteOfDay(System.currentTimeMillis());
         boolean canStart = !DataStore.availableStarts(date, slot, Fmt.startFloor(date)).isEmpty();
-        boolean canParkNow = today && !DataStore.hasParkedCar(slot)
-                && DataStore.maxHours(date, slot, nowMin, true, null) >= 1;
+        boolean canParkNow = today && DataStore.maxHours(date, slot, nowMin, true, null) >= 1;
         if (!canStart && !canParkNow) {
-            StringBuilder sb = new StringBuilder("Slot " + slot + " has no free time left on " + date + ".\nBooked:\n");
-            for (DataStore.ReservationInfo r : DataStore.getBookings(date, slot))
-                sb.append("  ").append(Fmt.timeRange(r.startMin, r.endMin())).append('\n');
-            JOptionPane.showMessageDialog(this, sb.toString(), "Slot Fully Booked", JOptionPane.INFORMATION_MESSAGE);
+            JOptionPane.showMessageDialog(this, "Slot " + slot + " has no free time left on " + date + ".",
+                "Slot Unavailable", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        new BookingDialog(this, username, date, slot, plate).setVisible(true);
+        int before = DataStore.getReservationsForUser(username).size();
+        BookingDialog dlg = new BookingDialog(this, username, date, slot, plate);
+        dlg.setVisible(true);
+        if (DataStore.getReservationsForUser(username).size() > before) showPage("mine");
+        if (dlg.chosenPlate() != null) { plate = dlg.chosenPlate(); updatePlateLabel(); }
         refreshAll();
     }
 
@@ -674,38 +911,63 @@ class MainFrame extends JFrame {
 
         if (info.status == DataStore.PARKED) {
             long now = System.currentTimeMillis();
+            if (info.hasLeaveRequest()) {
+                Object[] opts = {"Cancel Payment", "Close"};
+                int ch = JOptionPane.showOptionDialog(this,
+                    "You sent an overtime payment of " + Park.money(info.leaveFee) + " (" + info.leaveMode
+                    + (info.leaveRef.isEmpty() ? "" : ", ref. no. " + info.leaveRef) + ").\n"
+                    + "The admin has to validate it before you can leave. This screen updates by itself.\n\n"
+                    + "Cancel the payment request instead?", "Waiting for the Admin",
+                    JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, opts, opts[1]);
+                if (ch == 0) DataStore.clearLeaveRequest(id);
+                refreshAll();
+                return;
+            }
             double fee = info.overtimeFee(now);
             if (fee > 0) {
                 String msg = "Slot " + slot + " on " + date + "\n\n"
                     + "Paid time:       " + info.hours + "h\n"
                     + "Time parked:    " + Park.hms(now - info.startMillis) + "\n"
                     + "Overtime:         " + Park.hms(info.overStayMillis(now)) + "  ("
-                    + info.billableHours(now) + "h billed at " + Park.money(Park.RATE) + ")\n\n"
-                    + "Overtime charge: " + Park.money(fee) + "\n\n"
-                    + "Pay the overtime charge at the counter and leave?";
-                Object[] opts = {"Pay " + Park.money(fee) + " & Leave", "Keep Parking"};
+                    + info.billableHours(now) + "h billed at " + Park.money(Park.rateOf(info.slot)) + ")\n\n"
+                    + "Total extra charge: " + Park.money(fee) + "\n\n"
+                    + "Pay the total extra charge first. The admin must validate your payment\n"
+                    + "before you are approved to leave.";
+                Object[] opts = {"Pay " + Park.money(fee), "Keep Parking"};
                 int ch = JOptionPane.showOptionDialog(this, msg, "Overtime Charge",
                     JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE, null, opts, opts[0]);
                 if (ch == 0) {
-                    seen.remove(id);
-                    DataStore.Fine f = DataStore.checkout(id, "User", true);
-                    double paid = f == null ? fee : f.fee;
-                    JOptionPane.showMessageDialog(this,
-                        "Overtime of " + Park.money(paid) + " has been paid. Slot " + slot
-                        + " is now free.\nThank you for using ParkWise!");
+                    PayDialog d = new PayDialog(this, "Overtime Payment",
+                        "Slot " + slot + "  \u00B7  " + info.billableHours(now) + "h overtime\nThe admin validates it before you can leave.",
+                        fee, true);
+                    d.setVisible(true);
+                    if (d.submitted) {
+                        String err = DataStore.requestLeave(id, d.mode, d.ref, fee, d.receipt);
+                        if (err != null) JOptionPane.showMessageDialog(this, err, "Could Not Send Payment", JOptionPane.WARNING_MESSAGE);
+                        else JOptionPane.showMessageDialog(this,
+                            "Payment sent to the admin.\nYou will be notified when it is validated and you may leave.",
+                            "Payment Sent", JOptionPane.INFORMATION_MESSAGE);
+                    }
                 }
             } else {
                 int ch = JOptionPane.showConfirmDialog(this,
-                    "Leave slot " + slot + "?\nThe slot will become available for other drivers.",
-                    "Leave Parking", JOptionPane.YES_NO_OPTION);
-                if (ch == JOptionPane.YES_OPTION) { seen.remove(id); DataStore.checkout(id, "User", true); }
+                    "Leave slot " + slot + "?\nThe slot will become available for other drivers.\n\n"
+                    + "Only press Leave when you are driving out. If your car is still in the slot, you will be\n"
+                    + "charged a " + Park.money(Park.LEAVE_PENALTY) + " penalty. The admin is notified when you leave.",
+                    "Leave Parking", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (ch == JOptionPane.YES_OPTION) {
+                    seen.remove(id);
+                    String err = DataStore.leave(id);
+                    if (err != null) JOptionPane.showMessageDialog(this, err, "Cannot Leave", JOptionPane.WARNING_MESSAGE);
+                }
             }
         } else if (info.status == DataStore.PENDING) {
             Object[] opts = {"Cancel Request", "Keep Waiting"};
             int ch = JOptionPane.showOptionDialog(this,
-                "Your counter payment for slot " + slot + " (" + Fmt.time(info.startMin) + ", " + info.hours
-                + "h) is waiting for the admin to approve it.\nPay " + Park.money(info.price)
-                + " at the counter. This screen updates by itself once it is approved.\n\nCancel the request instead?",
+                "Your payment for slot " + slot + " (" + info.hours + "h, " + Park.money(info.price) + ", "
+                + (info.refNo.isEmpty() ? "counter" : "ref. no. " + info.refNo) + ") is waiting for the admin to validate it.\n"
+                + (info.refNo.isEmpty() ? "Pay " + Park.money(info.price) + " at the counter. " : "")
+                + "This screen updates by itself and you will be notified once it is approved.\n\nCancel the request instead?",
                 "Waiting for Approval", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null, opts, opts[1]);
             if (ch == 0) { seen.remove(id); DataStore.clearBooking(id); }
         } else {
@@ -730,62 +992,5 @@ class MainFrame extends JFrame {
             }
         }
         refreshAll();
-    }
-
-    /** Slot tile. Same look as Park.SlotButton, plus a small "x2" when a slot has several bookings that day. */
-    private static class TimeSlotButton extends JButton {
-        private static final long serialVersionUID = 1L;
-        private final String slot;
-        private final int status, count;
-        private final boolean mine;
-        private boolean hovering = false;
-
-        TimeSlotButton(String slot, int status, boolean mine, int count) {
-            this.slot = slot; this.status = status; this.mine = mine; this.count = count;
-            setContentAreaFilled(false); setBorderPainted(false); setFocusPainted(false); setOpaque(false);
-            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            addMouseListener(new MouseAdapter() {
-                public void mouseEntered(MouseEvent e) { hovering = true; repaint(); }
-                public void mouseExited(MouseEvent e)  { hovering = false; repaint(); }
-            });
-        }
-
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = Park.aa(g);
-            int w = getWidth(), h = getHeight();
-            Color c = status == 1 ? Park.SLOT_RESERVED : status == 2 ? Park.SLOT_OCCUPIED : Park.SLOT_AVAILABLE;
-            String st = status == 1 ? "Booked" : status == 2 ? "Parked" : "Available";
-
-            g2.setColor(hovering ? new Color(38, 38, 76) : new Color(24, 24, 50));
-            g2.fillRoundRect(0, 0, w - 1, h - 1, 16, 16);
-            g2.setColor(Park.alpha(c, hovering ? 55 : 30));
-            g2.fillRoundRect(0, 0, w - 1, h - 1, 16, 16);
-            g2.setColor(Park.alpha(c, mine ? 255 : 150));
-            g2.setStroke(new BasicStroke(mine ? 2.2f : 1.2f));
-            g2.drawRoundRect(1, 1, w - 3, h - 3, 16, 16);
-
-            g2.setColor(c); g2.fillOval(12, 12, 8, 8);
-            if (count > 1) {
-                g2.setFont(Park.bold(10));
-                g2.setColor(Park.TEXT_MUTED);
-                g2.drawString("x" + count, 25, 20);
-            }
-
-            g2.setFont(Park.bold(22)); FontMetrics fm = g2.getFontMetrics();
-            g2.setColor(Park.TEXT_PRIMARY);
-            g2.drawString(slot, (w - fm.stringWidth(slot)) / 2, h / 2 + 4);
-
-            g2.setFont(Park.plain(11)); fm = g2.getFontMetrics();
-            g2.setColor(c);
-            g2.drawString(st, (w - fm.stringWidth(st)) / 2, h / 2 + 24);
-
-            if (mine) {
-                g2.setFont(Park.bold(9)); fm = g2.getFontMetrics();
-                int tw = fm.stringWidth("YOU") + 12;
-                g2.setColor(c); g2.fillRoundRect(w - tw - 8, 8, tw, 16, 8, 8);
-                g2.setColor(Park.BG_DARK); g2.drawString("YOU", w - tw - 2, 20);
-            }
-            g2.dispose();
-        }
     }
 }

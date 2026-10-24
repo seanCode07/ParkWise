@@ -26,26 +26,82 @@ import javax.swing.plaf.FontUIResource;
    Park : theme, helpers and custom components used by every screen
    ===================================================================== */
 class Park {
-    static final Color BG_DARK        = new Color(9, 9, 22);
-    static final Color BG_PANEL       = new Color(14, 14, 32);
-    static final Color BG_CARD        = new Color(22, 22, 46);
-    static final Color BG_CARD_HI     = new Color(32, 32, 64);
-    static final Color ACCENT         = new Color(124, 92, 255);
-    static final Color ACCENT_2       = new Color(70, 130, 255);
-    static final Color TEXT_PRIMARY   = new Color(240, 240, 255);
-    static final Color TEXT_MUTED     = new Color(138, 138, 178);
-    static final Color SUCCESS        = new Color(52, 211, 153);
-    static final Color WARNING        = new Color(251, 176, 64);
-    static final Color DANGER         = new Color(244, 92, 120);
-    static final Color BORDER         = new Color(48, 48, 88);
-    static final Color SLOT_AVAILABLE = new Color(46, 204, 140);
-    static final Color SLOT_RESERVED  = new Color(255, 170, 50);
-    static final Color SLOT_OCCUPIED  = new Color(244, 85, 110);
+    // ---- colors (dark design) ----
+    static final Color BG_DARK = new Color(9, 9, 22), BG_PANEL = new Color(14, 14, 32), BG_CARD = new Color(22, 22, 46),
+        BG_CARD_HI = new Color(32, 32, 64), ACCENT = new Color(124, 92, 255), ACCENT_2 = new Color(70, 130, 255),
+        TEXT_PRIMARY = new Color(240, 240, 255), TEXT_MUTED = new Color(138, 138, 178),
+        SUCCESS = new Color(52, 211, 153), WARNING = new Color(251, 176, 64), DANGER = new Color(244, 92, 120),
+        BORDER = new Color(48, 48, 88),
+        SLOT_AVAILABLE = new Color(46, 204, 140), SLOT_RESERVED = new Color(255, 170, 50), SLOT_OCCUPIED = new Color(244, 85, 110);
+    // surfaces used by buttons, fields, lists and table rows
+    static final Color BTN_IDLE = new Color(30, 30, 62), FIELD_BG = new Color(12, 12, 28), LIST_BG = new Color(18, 18, 40),
+        ROW_ALT = new Color(24, 24, 50), SEL_BG = new Color(64, 52, 140), HOT_BG = new Color(58, 22, 40),
+        FINE_BG = new Color(44, 16, 30), TRACK = new Color(40, 40, 80);
 
-    static final double RATE = 20.0;
+    // ---- rates (pesos per hour). Park Now and overtime use CAR_RATE / MOTO_RATE. ----
+    static final double CAR_RATE = 15.0;
+    static final double MOTO_RATE = 10.0;
+    /** Reservation: first hour, then the normal rate for every extra hour. */
+    static final double CAR_RESERVE_FIRST = 30.0;
+    static final double MOTO_RESERVE_FIRST = 20.0;
+    /** Reservation by a verified PWD / senior citizen: discounted first hour, then a discounted hourly rate. */
+    static final double CAR_PRIORITY_FIRST = 15.0;
+    static final double CAR_PRIORITY_RATE = 10.0;
+    static final double MOTO_PRIORITY_FIRST = 10.0;
+    static final double MOTO_PRIORITY_RATE = 5.0;
+    /** Charged when a driver presses Leave while the car is still parked (abuse of the Leave button). */
+    static final double LEAVE_PENALTY = 100.0;
+    /** Charged to a driver (user or walk-in) who parks in a PWD / senior citizen slot without being a verified PWD / senior driver. */
+    static final double PWD_VIOLATION = 100.0;
     static final String PESO = "\u20B1";
     static final String DATE_PATTERN = "MMMM dd, yyyy";
+
+    // ---------- parking building: 4 floors, each with 30 car slots (24 regular + 6 PWD/Senior) and 30 motorcycle slots (24 regular + 6 PWD/Senior) ----------
+    static final int FLOORS = 4;
+    static final String[] FLOOR_NAMES = {"Ground Floor (1st)", "2nd Floor", "3rd Floor", "4th Floor"};
+    static final int ROW_LEN = 12;          // slots in each of the rows A, B, M1 and M2 (24 regular car + 24 regular motorcycle)
+    static final int PWD_COUNT = 6;         // PWD / senior car slots and PWD / senior motorcycle slots per floor (included in the 30)
+
+    /** Slot id = floor + "F-" + local name, e.g. "2F-A5", "1F-PWD3", "4F-M1-7", "3F-PWM2". */
+    static String slotId(int floor, String local) { return floor + "F-" + local; }
+
+    /** Local slot names of one floor in map order. */
+    static java.util.List<String> localNames() {
+        java.util.List<String> l = new java.util.ArrayList<String>();
+        for (int i = 1; i <= PWD_COUNT; i++) l.add("PWD" + i);
+        for (int i = 1; i <= PWD_COUNT; i++) l.add("PWM" + i);
+        for (int i = 1; i <= ROW_LEN; i++) l.add("A" + i);
+        for (int i = 1; i <= ROW_LEN; i++) l.add("B" + i);
+        for (int i = 1; i <= ROW_LEN; i++) l.add("M1-" + i);
+        for (int i = 1; i <= ROW_LEN; i++) l.add("M2-" + i);
+        return l;
+    }
+
+    /** Every slot of every floor. */
     static final String[] SLOTS = buildSlots();
+    static final int SLOTS_PER_FLOOR = 2 * ROW_LEN + 2 * ROW_LEN + 2 * PWD_COUNT;   // = 60
+
+    static int floorOf(String slot) {
+        try { return Integer.parseInt(slot.substring(0, slot.indexOf('F'))); } catch (Exception e) { return 1; }
+    }
+    static String localOf(String slot) { int i = slot.indexOf("F-"); return i < 0 ? slot : slot.substring(i + 2); }
+    static boolean isPwdSlot(String slot) { String l = localOf(slot); return l.startsWith("PWD") || l.startsWith("PWM"); }
+    static boolean isMotoSlot(String slot) { String l = localOf(slot); return l.startsWith("M") || l.startsWith("PWM"); }
+    /** "car slot", "motorcycle slot", "PWD/Senior car slot" or "PWD/Senior motorcycle slot". */
+    static String slotKind(String slot) {
+        return (isPwdSlot(slot) ? "PWD/Senior " : "") + (isMotoSlot(slot) ? "motorcycle" : "car") + " slot";
+    }
+    static String floorName(int floor) { return FLOOR_NAMES[Math.max(1, Math.min(FLOORS, floor)) - 1]; }
+    /** Old save files only had "A1"-style names: those belong to the ground floor. */
+    static String normalizeSlot(String s) {
+        if (s == null || s.isEmpty()) return s;
+        return s.matches("\\d+F-.+") ? s : "1F-" + s;
+    }
+    static String[] slotsOnFloor(int floor) {
+        java.util.List<String> l = new java.util.ArrayList<String>();
+        for (String n : localNames()) l.add(slotId(floor, n));
+        return l.toArray(new String[0]);
+    }
 
     /** Images and fonts live next to the source files (see loadImage / loadFont). */
     private static final BufferedImage LOGO   = loadImage("logo.png");
@@ -54,10 +110,9 @@ class Park {
     private static final Font BOLD_FONT = loadFont("SpaceGrotesk-Bold.ttf");
 
     private static String[] buildSlots() {
-        String[] s = new String[20];
-        String rows = "ABCD";
-        for (int i = 0; i < 20; i++) s[i] = rows.charAt(i / 5) + "" + (i % 5 + 1);
-        return s;
+        java.util.List<String> all = new java.util.ArrayList<String>();
+        for (int f = 1; f <= FLOORS; f++) for (String n : localNames()) all.add(slotId(f, n));
+        return all.toArray(new String[0]);
     }
 
     // ---------- images ----------
@@ -158,6 +213,54 @@ class Park {
                          Math.min(255, c.getBlue() + amt), c.getAlpha());
     }
 
+    /** Pesos without ".00" when it is a whole number: 15 -> "\u20B115". */
+    static String moneyShort(double v) {
+        return v == Math.floor(v) ? PESO + (long) v : money(v);
+    }
+
+    /** Park Now / walk-in / overtime rate per hour for this slot (car or motorcycle). */
+    static double rateOf(String slot) { return isMotoSlot(slot) ? MOTO_RATE : CAR_RATE; }
+
+    /**
+     * Price of a stay in this slot.
+     * Park Now / walk-in: the normal hourly rate. Reservation: a higher first hour, then the normal rate;
+     * a verified PWD / senior citizen pays the discounted reservation rates.
+     */
+    static double priceFor(int hours, boolean reservation, String slot, boolean priority) {
+        if (hours <= 0) return 0;
+        boolean moto = isMotoSlot(slot);
+        if (!reservation) return hours * rateOf(slot);
+        double first = priority ? (moto ? MOTO_PRIORITY_FIRST : CAR_PRIORITY_FIRST) : (moto ? MOTO_RESERVE_FIRST : CAR_RESERVE_FIRST);
+        double more  = priority ? (moto ? MOTO_PRIORITY_RATE : CAR_PRIORITY_RATE) : rateOf(slot);
+        return first + (hours - 1) * more;
+    }
+
+    /** Short rate description, e.g. "30.00 1st hr, then 15.00/hr" (reservation) or "15.00 / hour" (Park Now). */
+    static String rateText(String slot, boolean reservation, boolean priority) {
+        boolean moto = isMotoSlot(slot);
+        if (!reservation) return money(rateOf(slot)) + " / hour";
+        double first = priority ? (moto ? MOTO_PRIORITY_FIRST : CAR_PRIORITY_FIRST) : (moto ? MOTO_RESERVE_FIRST : CAR_RESERVE_FIRST);
+        double more  = priority ? (moto ? MOTO_PRIORITY_RATE : CAR_PRIORITY_RATE) : rateOf(slot);
+        return money(first) + " 1st hr, then " + money(more) + "/hr";
+    }
+
+    /** A clock label with a fixed width that fits the widest possible text, so it never gets cut off or pushes other text. */
+    static JLabel clockLabel() {
+        JLabel l = new JLabel(clockText(), SwingConstants.CENTER);
+        l.setFont(bold(14));
+        l.setForeground(TEXT_PRIMARY);
+        FontMetrics fm = l.getFontMetrics(l.getFont());
+        int w = (int) (fm.stringWidth("Wed, Sep 30 2026   12:59:59 PM") * 1.08) + 6;
+        l.setPreferredSize(new Dimension(w, fm.getHeight() + 4));
+        l.setMinimumSize(new Dimension(w, fm.getHeight() + 4));
+        return l;
+    }
+
+    /** "Thu, Oct 15 2026   3:45:12 PM" for the live clocks. */
+    static String clockText() {
+        return new SimpleDateFormat("EEE, MMM dd yyyy   h:mm:ss a", Locale.ENGLISH).format(new Date());
+    }
+
     static String money(double v) { return PESO + String.format(Locale.US, "%.2f", v); }
 
     static String fmt(Calendar c) { return new SimpleDateFormat(DATE_PATTERN, Locale.ENGLISH).format(c.getTime()); }
@@ -205,10 +308,38 @@ class Park {
         UIManager.put("OptionPane.background", BG_CARD);
         UIManager.put("Panel.background", BG_CARD);
         UIManager.put("OptionPane.messageForeground", TEXT_PRIMARY);
+        UIManager.put("Label.foreground", TEXT_PRIMARY);
+        UIManager.put("CheckBox.foreground", TEXT_PRIMARY);
+        UIManager.put("CheckBox.background", BG_CARD);
+        UIManager.put("RadioButton.foreground", TEXT_PRIMARY);
+        UIManager.put("RadioButton.background", BG_CARD);
+        UIManager.put("TextField.background", FIELD_BG);
+        UIManager.put("TextField.foreground", TEXT_PRIMARY);
+        UIManager.put("TextField.caretForeground", TEXT_PRIMARY);
+        UIManager.put("PasswordField.background", FIELD_BG);
+        UIManager.put("PasswordField.foreground", TEXT_PRIMARY);
+        UIManager.put("PasswordField.caretForeground", TEXT_PRIMARY);
+        UIManager.put("TextArea.background", FIELD_BG);
+        UIManager.put("TextArea.foreground", TEXT_PRIMARY);
+        UIManager.put("ComboBox.background", FIELD_BG);
+        UIManager.put("ComboBox.foreground", TEXT_PRIMARY);
+        UIManager.put("ComboBox.selectionBackground", SEL_BG);
+        UIManager.put("ComboBox.selectionForeground", TEXT_PRIMARY);
+        UIManager.put("List.background", LIST_BG);
+        UIManager.put("List.foreground", TEXT_PRIMARY);
+        UIManager.put("List.selectionBackground", SEL_BG);
+        UIManager.put("List.selectionForeground", TEXT_PRIMARY);
+        UIManager.put("ToolTip.background", BG_CARD_HI);
+        UIManager.put("ToolTip.foreground", TEXT_PRIMARY);
+        UIManager.put("ToolTip.border", BorderFactory.createLineBorder(BORDER));
+        UIManager.put("Button.background", BTN_IDLE);
+        UIManager.put("Button.foreground", TEXT_PRIMARY);
+        UIManager.put("ScrollPane.background", BG_CARD);
+        UIManager.put("Viewport.background", BG_CARD);
         FontUIResource reg = new FontUIResource(plain(13));
         String[] keys = {"OptionPane.messageFont", "OptionPane.buttonFont", "Button.font", "Label.font",
                          "TextField.font", "PasswordField.font", "CheckBox.font", "ToolTip.font",
-                         "Table.font", "TextArea.font", "EditorPane.font"};
+                         "Table.font", "TextArea.font", "EditorPane.font", "ComboBox.font", "RadioButton.font"};
         for (String k : keys) UIManager.put(k, reg);
         UIManager.put("TableHeader.font", new FontUIResource(bold(12)));
     }
@@ -225,7 +356,7 @@ class Park {
     }
 
     static RoundButton secondaryBtn(String t) {
-        RoundButton b = new RoundButton(t, new Color(30, 30, 62), TEXT_PRIMARY);
+        RoundButton b = new RoundButton(t, BTN_IDLE, TEXT_PRIMARY);
         b.setOutline(BORDER); b.setFont(plain(13)); b.setPreferredSize(new Dimension(100, 38)); b.setRadius(12);
         return b;
     }
@@ -243,7 +374,7 @@ class Park {
     }
 
     private static void styleInput(JTextField tf) {
-        tf.setFont(plain(14)); tf.setBackground(new Color(12, 12, 28));
+        tf.setFont(plain(14)); tf.setBackground(FIELD_BG);
         tf.setForeground(TEXT_PRIMARY); tf.setCaretColor(ACCENT);
         tf.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(BORDER, 1), pad(8, 12, 8, 12)));
@@ -281,7 +412,7 @@ class Park {
     static class Card extends JPanel {
         private static final long serialVersionUID = 1L;
         private final int radius;
-        private Color fill = new Color(22, 22, 46, 230);
+        private Color fill = alpha(BG_CARD, 235);
         private Color line = BORDER;
         Card(LayoutManager lm, int radius) { super(lm); this.radius = radius; setOpaque(false); }
         void setFill(Color c) { fill = c; repaint(); }
@@ -337,64 +468,17 @@ class Park {
                 g2.drawLine(cx - 3 * d, cy - 6, cx + 3 * d, cy);
                 g2.drawLine(cx + 3 * d, cy, cx - 3 * d, cy + 6);
             } else {
-                g2.setFont(getFont());
+                Font f = getFont();
+                g2.setFont(f);
                 FontMetrics fm = g2.getFontMetrics();
                 String t = getText();
+                int sz = f.getSize();
+                while (fm.stringWidth(t) > w - 10 && sz > 9) {       // shrink the text instead of cutting it off
+                    sz--; g2.setFont(f.deriveFont((float) sz)); fm = g2.getFontMetrics();
+                }
                 int tx = (w - fm.stringWidth(t)) / 2;
                 int ty = (h - fm.getHeight()) / 2 + fm.getAscent();
                 g2.drawString(t, tx, ty);
-            }
-            g2.dispose();
-        }
-    }
-
-    /** One parking slot tile. status: 0 available, 1 reserved, 2 occupied. */
-    static class SlotButton extends JButton {
-        private static final long serialVersionUID = 1L;
-        private final String slot;
-        private final int status;
-        private final boolean mine;
-        private boolean hovering = false;
-
-        SlotButton(String slot, int status, boolean mine) {
-            this.slot = slot; this.status = status; this.mine = mine;
-            setContentAreaFilled(false); setBorderPainted(false); setFocusPainted(false); setOpaque(false);
-            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            addMouseListener(new MouseAdapter() {
-                public void mouseEntered(MouseEvent e) { hovering = true; repaint(); }
-                public void mouseExited(MouseEvent e)  { hovering = false; repaint(); }
-            });
-        }
-
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = aa(g);
-            int w = getWidth(), h = getHeight();
-            Color c = status == 1 ? SLOT_RESERVED : status == 2 ? SLOT_OCCUPIED : SLOT_AVAILABLE;
-            String st = status == 1 ? "Reserved" : status == 2 ? "Occupied" : "Available";
-
-            g2.setColor(hovering ? new Color(38, 38, 76) : new Color(24, 24, 50));
-            g2.fillRoundRect(0, 0, w - 1, h - 1, 16, 16);
-            g2.setColor(alpha(c, hovering ? 55 : 30));
-            g2.fillRoundRect(0, 0, w - 1, h - 1, 16, 16);
-            g2.setColor(alpha(c, mine ? 255 : 150));
-            g2.setStroke(new BasicStroke(mine ? 2.2f : 1.2f));
-            g2.drawRoundRect(1, 1, w - 3, h - 3, 16, 16);
-
-            g2.setColor(c); g2.fillOval(12, 12, 8, 8);
-
-            g2.setFont(bold(22)); FontMetrics fm = g2.getFontMetrics();
-            g2.setColor(TEXT_PRIMARY);
-            g2.drawString(slot, (w - fm.stringWidth(slot)) / 2, h / 2 + 4);
-
-            g2.setFont(plain(11)); fm = g2.getFontMetrics();
-            g2.setColor(c);
-            g2.drawString(st, (w - fm.stringWidth(st)) / 2, h / 2 + 24);
-
-            if (mine) {
-                g2.setFont(bold(9)); fm = g2.getFontMetrics();
-                int tw = fm.stringWidth("YOU") + 12;
-                g2.setColor(c); g2.fillRoundRect(w - tw - 8, 8, tw, 16, 8, 8);
-                g2.setColor(BG_DARK); g2.drawString("YOU", w - tw - 2, 20);
             }
             g2.dispose();
         }
@@ -411,7 +495,7 @@ class Park {
             int w = getWidth(), h = getHeight();
             int size = Math.min(w, h) - 24, x = (w - size) / 2, y = (h - size) / 2;
             g2.setStroke(new BasicStroke(12f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.setColor(new Color(40, 40, 80)); g2.drawOval(x, y, size, size);
+            g2.setColor(TRACK); g2.drawOval(x, y, size, size);
             if (percent > 0) {
                 g2.setPaint(new GradientPaint(x, y, ACCENT_2, x + size, y + size, ACCENT));
                 g2.draw(new Arc2D.Double(x, y, size, size, 90, -360.0 * percent / 100.0, Arc2D.OPEN));
@@ -434,7 +518,7 @@ class Park {
         protected void paintComponent(Graphics g) {
             Graphics2D g2 = aa(g);
             int w = getWidth(), h = getHeight();
-            g2.setColor(new Color(36, 36, 72)); g2.fillRoundRect(0, 0, w, h, h, h);
+            g2.setColor(TRACK); g2.fillRoundRect(0, 0, w, h, h, h);
             g2.setPaint(new GradientPaint(0, 0, ACCENT_2, w, 0, ACCENT));
             g2.fillRoundRect(0, 0, Math.max(h, (int) (w * (value / (double) max))), h, h, h);
             g2.dispose();
@@ -511,7 +595,7 @@ class Park {
                 g2.setStroke(new BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 g2.drawLine(5, 10, 8, 14); g2.drawLine(8, 14, 15, 6);
             } else {
-                g2.setColor(new Color(12, 12, 28)); g2.fillRoundRect(0, 0, 19, 19, 6, 6);
+                g2.setColor(FIELD_BG); g2.fillRoundRect(0, 0, 19, 19, 6, 6);
                 g2.setColor(BORDER); g2.drawRoundRect(0, 0, 19, 19, 6, 6);
             }
             g2.dispose();
@@ -538,4 +622,21 @@ class Park {
             g2.dispose();
         }
     }
+
+    /**
+     * A panel for use inside a JScrollPane that always takes the width of the viewport. Without this, content that is a little
+     * wider than the viewport is silently cut off on the right (letters and fields disappear).
+     */
+    static class ScrollView extends JPanel implements Scrollable {
+        private static final long serialVersionUID = 1L;
+        ScrollView(LayoutManager lm) { super(lm); setOpaque(false); }
+        public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        public int getScrollableUnitIncrement(Rectangle r, int o, int d) { return 16; }
+        public int getScrollableBlockIncrement(Rectangle r, int o, int d) { return Math.max(40, r.height - 24); }
+        public boolean getScrollableTracksViewportWidth() { return true; }
+        public boolean getScrollableTracksViewportHeight() { return false; }
+    }
+
+    // runs last so that fonts and everything else it needs already exist
+    static { styleDialogs(); }
 }
