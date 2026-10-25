@@ -36,6 +36,7 @@ class FloorPlan extends JComponent {
     private final Map<String, Rectangle2D.Double> cells = new LinkedHashMap<String, Rectangle2D.Double>();
     private Listener listener;
     private String hover = null;
+    private boolean adminMode = false;        // admin monitoring: plate numbers in the slots and driver details in the tooltips
     private double scale = 1, offX = 0, offY = 0;
 
     FloorPlan() {
@@ -56,6 +57,9 @@ class FloorPlan extends JComponent {
     }
 
     void setListener(Listener l) { listener = l; }
+
+    /** In admin mode every booked slot shows the plate number, and the tooltip names the driver. */
+    void setAdminMode(boolean on) { adminMode = on; repaint(); }
 
     void setFloor(int f) { floor = f; hover = null; buildLayout(); repaint(); }
 
@@ -142,6 +146,26 @@ class FloorPlan extends JComponent {
             sb.append("<br>Available all day. Click to book.");
             if (pwd) sb.append(userPwd ? "<br>PWD / senior citizen priority slot." : "<br><font color='#FFAA32'>PWD / senior citizen drivers only (verified ID).</font>");
             return sb.append("</html>").toString();
+        }
+        if (adminMode) {
+            String who = DataStore.isWalkIn(info.user) ? "Walk-in driver" : DataStore.getDisplayName(info.user)
+                    + (DataStore.getPhone(info.user).isEmpty() ? "" : "  (" + DataStore.getPhone(info.user) + ")");
+            sb.append("<br>Driver: ").append(who);
+            sb.append("<br>Plate: ").append(Fmt.formatPlate(info.plate));
+            String st = info.status == DataStore.PARKED ? (info.hasLeaveRequest() ? "Parked - overtime payment sent" : "Parked")
+                      : info.status == DataStore.PENDING ? "Waiting for payment approval" : "Reserved";
+            sb.append("<br>Status: ").append(st);
+            sb.append("<br>Time: ").append(Fmt.timeRange(info.startMin, info.endMin())).append("  (").append(info.hours).append("h paid)");
+            if (info.status == DataStore.PARKED) {
+                long rem = info.remainingMillis(now);
+                sb.append("<br>").append(rem >= 0 ? "<b>Time left: " + Park.hms(rem) + "</b>"
+                                                   : "<b><font color='#F45C78'>OVER by " + Park.hms(-rem) + "</font></b>");
+            } else if (info.status == DataStore.RESERVED) {
+                long toStart = info.schedStartMillis() - now;
+                sb.append("<br>").append(toStart > 0 ? "Starts in: " + Park.hms(toStart) : "Time left: " + Park.hms(info.endMillis - now));
+            }
+            sb.append("<br>Click the slot for more details.</html>");
+            return sb.toString();
         }
         boolean mine = info.user.equals(username);
         if (info.status == DataStore.PARKED) {
@@ -353,8 +377,16 @@ class FloorPlan extends JComponent {
 
         // vehicle + countdown
         double iconTop = r.y + 14, iconH = r.height - 14 - 15;
-        vehicle(g2, moto, r.getCenterX(), iconTop, Math.max(14, iconH),
-                parked ? Park.alpha(Park.SLOT_OCCUPIED, 150) : null, parked ? Park.SLOT_OCCUPIED : Park.SLOT_RESERVED, !parked);
+        if (adminMode) {
+            String pl = Fmt.formatPlate(info.plate);
+            int ps = 10;
+            g2.setFont(Park.bold(ps));
+            while (g2.getFontMetrics().stringWidth(pl) > r.width - 4 && ps > 7) { ps--; g2.setFont(Park.bold(ps)); }
+            text(g2, pl, r.getCenterX(), r.y + r.height / 2 + 3, Park.bold(ps), Park.TEXT_PRIMARY);
+        } else {
+            vehicle(g2, moto, r.getCenterX(), iconTop, Math.max(14, iconH),
+                    parked ? Park.alpha(Park.SLOT_OCCUPIED, 150) : null, parked ? Park.SLOT_OCCUPIED : Park.SLOT_RESERVED, !parked);
+        }
         String tm = timerText(info, now);
         int size = moto || pwd ? 9 : 10;
         g2.setFont(Park.bold(size));

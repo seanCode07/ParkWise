@@ -90,10 +90,11 @@ class TermsDialog extends JDialog {
             + "<p><b>2. Rates.</b> <i>Park Now</i> costs " + car + " per hour for a car and " + moto + " per hour for a motorcycle. "
             + "A <i>reservation</i> costs " + Park.moneyShort(Park.CAR_RESERVE_FIRST) + " for the first hour of a car, then " + car
             + " for every extra hour, and " + Park.moneyShort(Park.MOTO_RESERVE_FIRST) + " for the first hour of a motorcycle, then " + moto
-            + " for every extra hour. <b>Drivers with a verified PWD or senior citizen ID</b> pay less when they reserve: car "
-            + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour then " + Park.moneyShort(Park.CAR_PRIORITY_RATE)
-            + " per hour, motorcycle " + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour then "
-            + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour. Park Now and overtime always use the regular hourly rate. "
+            + " for every extra hour. <b>Drivers with a verified PWD or senior citizen ID</b> pay less in <b>any slot, regular or PWD / senior citizen</b>: "
+            + "car reservation " + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour then " + Park.moneyShort(Park.CAR_PRIORITY_RATE)
+            + " per hour, car Park Now " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour; motorcycle reservation "
+            + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour then " + Park.moneyShort(Park.MOTO_PRIORITY_RATE)
+            + " per hour, motorcycle Park Now " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour. Overtime is always billed at the regular hourly rate. "
             + "You pay in advance for the hours you choose.</p>"
             + "<p><b>3. Payment and approval.</b> Reservations must be paid online through the InstaPay QR code. After paying, "
             + "type the payment reference number in the app. Park Now bookings may be paid by QR code or at the counter. For every QR payment you must also attach a screenshot or photo of your payment receipt. "

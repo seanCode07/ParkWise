@@ -45,7 +45,7 @@ class Park {
     static final double CAR_RESERVE_FIRST = 30.0;
     static final double MOTO_RESERVE_FIRST = 20.0;
     /** Reservation by a verified PWD / senior citizen: discounted first hour, then a discounted hourly rate. */
-    static final double CAR_PRIORITY_FIRST = 15.0;
+    static final double CAR_PRIORITY_FIRST = 20.0;
     static final double CAR_PRIORITY_RATE = 10.0;
     static final double MOTO_PRIORITY_FIRST = 10.0;
     static final double MOTO_PRIORITY_RATE = 5.0;
@@ -221,6 +221,9 @@ class Park {
     /** Park Now / walk-in / overtime rate per hour for this slot (car or motorcycle). */
     static double rateOf(String slot) { return isMotoSlot(slot) ? MOTO_RATE : CAR_RATE; }
 
+    /** Hourly rate of a verified PWD / senior citizen for Park Now, and for the hours after the first one of a reservation. */
+    static double priorityRateOf(String slot) { return isMotoSlot(slot) ? MOTO_PRIORITY_RATE : CAR_PRIORITY_RATE; }
+
     /**
      * Price of a stay in this slot.
      * Park Now / walk-in: the normal hourly rate. Reservation: a higher first hour, then the normal rate;
@@ -229,7 +232,7 @@ class Park {
     static double priceFor(int hours, boolean reservation, String slot, boolean priority) {
         if (hours <= 0) return 0;
         boolean moto = isMotoSlot(slot);
-        if (!reservation) return hours * rateOf(slot);
+        if (!reservation) return hours * (priority ? priorityRateOf(slot) : rateOf(slot));
         double first = priority ? (moto ? MOTO_PRIORITY_FIRST : CAR_PRIORITY_FIRST) : (moto ? MOTO_RESERVE_FIRST : CAR_RESERVE_FIRST);
         double more  = priority ? (moto ? MOTO_PRIORITY_RATE : CAR_PRIORITY_RATE) : rateOf(slot);
         return first + (hours - 1) * more;
@@ -238,7 +241,7 @@ class Park {
     /** Short rate description, e.g. "30.00 1st hr, then 15.00/hr" (reservation) or "15.00 / hour" (Park Now). */
     static String rateText(String slot, boolean reservation, boolean priority) {
         boolean moto = isMotoSlot(slot);
-        if (!reservation) return money(rateOf(slot)) + " / hour";
+        if (!reservation) return money(priority ? priorityRateOf(slot) : rateOf(slot)) + " / hour";
         double first = priority ? (moto ? MOTO_PRIORITY_FIRST : CAR_PRIORITY_FIRST) : (moto ? MOTO_RESERVE_FIRST : CAR_RESERVE_FIRST);
         double more  = priority ? (moto ? MOTO_PRIORITY_RATE : CAR_PRIORITY_RATE) : rateOf(slot);
         return money(first) + " 1st hr, then " + money(more) + "/hr";

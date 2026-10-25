@@ -152,8 +152,7 @@ class BookingDialog extends JDialog {
         sumType.setForeground(bookingStatus == 1 ? Park.SLOT_RESERVED : Park.SLOT_OCCUPIED);
         sumTime.setText(Fmt.timeRange(startMin, startMin + hours * 60));
         sumHours.setText(hours + (hours == 1 ? " hour" : " hours"));
-        sumRate.setText(priority && bookingStatus == 1
-            ? Park.lines(rateText(), "PWD / senior citizen rate") : rateText());
+        sumRate.setText(priority ? Park.lines(rateText(), "PWD / senior citizen rate") : rateText());
         sumTotal.setText(Park.money(total()));
     }
 
@@ -303,7 +302,8 @@ class BookingDialog extends JDialog {
             parkBtn.setFill(Park.SLOT_OCCUPIED);     parkBtn.setForeground(Color.WHITE);
             reserveBtn.setFill(Park.BTN_IDLE); reserveBtn.setForeground(Park.TEXT_MUTED);
             noteLbl.setText(Park.lines(
-                Park.money(Park.rateOf(slot)) + " per hour. Pay by QR code or at the counter. Your time starts by itself",
+                Park.money(priority ? Park.priorityRateOf(slot) : Park.rateOf(slot)) + " per hour"
+                    + (priority ? " (PWD / senior citizen rate)" : "") + ". Pay by QR code or at the counter. Your time starts by itself",
                 "when the admin approves. Overtime is " + Park.money(Park.rateOf(slot)) + "/hr after "
                     + DataStore.GRACE_MINUTES + " min."));
             startTitle.setText("START TIME");

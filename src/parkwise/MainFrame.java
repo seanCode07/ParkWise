@@ -310,7 +310,7 @@ class MainFrame extends JFrame {
                 "Motorcycle:  " + Park.moneyShort(Park.MOTO_RATE) + "/hr  \u00B7  Reserve " + Park.moneyShort(Park.MOTO_RESERVE_FIRST)
                     + ", then " + Park.moneyShort(Park.MOTO_RATE)),
                 Park.bold(11), Park.ACCENT); rate.setAlignmentX(Component.LEFT_ALIGNMENT);
-        JLabel discount = Park.lbl("PWD / senior citizen reservation rates", Park.bold(11), Park.TEXT_PRIMARY);
+        JLabel discount = Park.lbl("PWD / senior citizen rates", Park.bold(11), Park.TEXT_PRIMARY);
         discount.setAlignmentX(Component.LEFT_ALIGNMENT);
         discount.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         discount.setToolTipText("Click to see the discounted rates");
@@ -407,13 +407,18 @@ class MainFrame extends JFrame {
 
     private void showDiscountRates() {
         JOptionPane.showMessageDialog(this,
-            "PWD / senior citizen reservation rates (for drivers with a verified ID):\n\n"
-            + "Car:  " + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour\n"
-            + "Motorcycle:  " + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour\n\n"
-            + "Regular reservations: car " + Park.moneyShort(Park.CAR_RESERVE_FIRST) + " then " + Park.moneyShort(Park.CAR_RATE)
-            + ", motorcycle " + Park.moneyShort(Park.MOTO_RESERVE_FIRST) + " then " + Park.moneyShort(Park.MOTO_RATE) + ".\n"
-            + "Park Now and overtime use the regular hourly rate (car " + Park.moneyShort(Park.CAR_RATE)
-            + ", motorcycle " + Park.moneyShort(Park.MOTO_RATE) + ").",
+            "PWD / senior citizen rates (for drivers with a verified ID).\n"
+            + "The discount applies in any slot, regular or PWD / senior citizen.\n\n"
+            + "Car\n"
+            + "   Reserve:  " + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour\n"
+            + "   Park Now:  " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour\n"
+            + "Motorcycle\n"
+            + "   Reserve:  " + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour, then " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour\n"
+            + "   Park Now:  " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour\n\n"
+            + "Regular rates: car " + Park.moneyShort(Park.CAR_RATE) + "/hr (reserve " + Park.moneyShort(Park.CAR_RESERVE_FIRST) + " then "
+            + Park.moneyShort(Park.CAR_RATE) + "), motorcycle " + Park.moneyShort(Park.MOTO_RATE) + "/hr (reserve "
+            + Park.moneyShort(Park.MOTO_RESERVE_FIRST) + " then " + Park.moneyShort(Park.MOTO_RATE) + ").\n"
+            + "Overtime is billed at the regular hourly rate.",
             "Rates", JOptionPane.INFORMATION_MESSAGE);
     }
 

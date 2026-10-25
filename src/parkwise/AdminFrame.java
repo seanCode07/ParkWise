@@ -3,6 +3,7 @@ package parkwise;
 import java.awt.*;
 import java.awt.event.*;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -45,6 +46,16 @@ class AdminFrame extends JFrame {
     private long flashUntil = 0L;
 
     private String adminId;
+    private String currentView = "book";
+    private Park.RoundButton tabFlr, flrBtnMap, flrBtnList;
+    private FloorPlan adminPlan;
+    private JComboBox<String> flrFloorBox, flrDateBox;
+    private JLabel flrSummary;
+    private CardLayout flrCards;
+    private JPanel flrCardPanel;
+    private JTable flrTable;
+    private final FloorListModel flrModel = new FloorListModel();
+    private final List<String> flrDates = new ArrayList<String>();
     private Park.RoundButton tabAdm, tabRec;
     private JTable admTable, recTable;
     private final AdminsModel admModel = new AdminsModel();
@@ -136,19 +147,21 @@ class AdminFrame extends JFrame {
 
         // tabs
         tabBook = tabButton("Bookings");
+        tabFlr = tabButton("Floor Plan");
         tabFine = tabButton("Fees & Penalties");
         tabPri = tabButton("PWD/Senior IDs");
         tabAdm = tabButton("Admins");
         tabRec = tabButton("Records");
         tabEvt = tabButton("Alerts");
         tabBook.addActionListener(Fmt.act(new Runnable() { public void run() { showView("book"); } }));
+        tabFlr.addActionListener(Fmt.act(new Runnable() { public void run() { showView("flr"); refreshFloor(); } }));
         tabFine.addActionListener(Fmt.act(new Runnable() { public void run() { refreshFines(); showView("fine"); } }));
         tabPri.addActionListener(Fmt.act(new Runnable() { public void run() { refreshPriority(); showView("pri"); } }));
         tabAdm.addActionListener(Fmt.act(new Runnable() { public void run() { refreshAdmins(); showView("adm"); } }));
         tabRec.addActionListener(Fmt.act(new Runnable() { public void run() { refreshRecords(); showView("rec"); } }));
         tabEvt.addActionListener(Fmt.act(new Runnable() { public void run() { refreshEvents(); showView("evt"); } }));
         JPanel tabs = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0)); tabs.setOpaque(false);
-        tabs.add(tabBook); tabs.add(tabFine); tabs.add(tabPri); tabs.add(tabAdm); tabs.add(tabRec); tabs.add(tabEvt);
+        tabs.add(tabBook); tabs.add(tabFlr); tabs.add(tabFine); tabs.add(tabPri); tabs.add(tabAdm); tabs.add(tabRec); tabs.add(tabEvt);
         alertLbl = Park.lbl(" ", Park.bold(12), Park.WARNING);
         JPanel tabRow = new JPanel(new BorderLayout(0, 6)); tabRow.setOpaque(false);
         tabRow.add(tabs, BorderLayout.NORTH); tabRow.add(alertLbl, BorderLayout.CENTER);
@@ -164,6 +177,7 @@ class AdminFrame extends JFrame {
         viewPanel = new JPanel(views); viewPanel.setOpaque(false);
         viewPanel.add(buildBookView(), "book");
         viewPanel.add(buildFineView(), "fine");
+        viewPanel.add(buildFloorView(), "flr");
         viewPanel.add(buildPriorityView(), "pri");
         viewPanel.add(buildAdminsView(), "adm");
         viewPanel.add(buildRecordsView(), "rec");
@@ -185,8 +199,9 @@ class AdminFrame extends JFrame {
     }
 
     private void showView(String name) {
-        Park.RoundButton[] all = {tabBook, tabFine, tabPri, tabAdm, tabRec, tabEvt};
-        String[] names = {"book", "fine", "pri", "adm", "rec", "evt"};
+        currentView = name;
+        Park.RoundButton[] all = {tabBook, tabFlr, tabFine, tabPri, tabAdm, tabRec, tabEvt};
+        String[] names = {"book", "flr", "fine", "pri", "adm", "rec", "evt"};
         for (int i = 0; i < all.length; i++) {
             boolean on = names[i].equals(name);
             all[i].setFill(on ? Park.ACCENT : Park.BTN_IDLE);
@@ -573,6 +588,7 @@ class AdminFrame extends JFrame {
 
     private void tick() {
         clockLbl.setText(Park.clockText());
+        if ("flr".equals(currentView)) refreshFloor();       // live countdowns on the floor plan
         int v = DataStore.version();                 // also picks up changes saved by another running copy
         if (v != seenVersion) { seenVersion = v; refreshFines(); refreshPriority(); refreshAdmins(); refreshEvents(); }
 
@@ -1220,6 +1236,168 @@ class AdminFrame extends JFrame {
         if (ok != JOptionPane.YES_OPTION) return;
         for (DataStore.User u : pick) DataStore.reviewPriority(u.id, verify);
         refreshPriority(); tick();
+    }
+
+    // ---------- floor plan: who is parked where, and how long they have left ----------
+    private JPanel buildFloorView() {
+        JPanel p = new JPanel(new BorderLayout(0, 8)); p.setOpaque(false);
+
+        flrFloorBox = new JComboBox<String>(Park.FLOOR_NAMES);
+        Fmt.styleCombo(flrFloorBox);
+        flrFloorBox.setPreferredSize(new Dimension(200, 38));
+        Calendar cal = Calendar.getInstance();
+        List<String> labels = new ArrayList<String>();
+        for (int i = 0; i < 14; i++) {
+            String d = Park.fmt(cal);
+            flrDates.add(d);
+            labels.add((i == 0 ? "Today  -  " : i == 1 ? "Tomorrow  -  " : "") + Park.shortDate(d));
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        flrDateBox = new JComboBox<String>(labels.toArray(new String[0]));
+        Fmt.styleCombo(flrDateBox);
+        flrDateBox.setPreferredSize(new Dimension(210, 38));
+        flrFloorBox.addActionListener(Fmt.act(new Runnable() {
+            public void run() { adminPlan.setFloor(flrFloorBox.getSelectedIndex() + 1); refreshFloor(); }
+        }));
+        flrDateBox.addActionListener(Fmt.act(new Runnable() { public void run() { refreshFloor(); } }));
+
+        flrBtnMap = tabButton("Map");
+        flrBtnList = tabButton("List of parked drivers");
+        flrBtnMap.addActionListener(Fmt.act(new Runnable() { public void run() { flrCards.show(flrCardPanel, "map"); styleFloorToggle(true); } }));
+        flrBtnList.addActionListener(Fmt.act(new Runnable() { public void run() { flrCards.show(flrCardPanel, "list"); styleFloorToggle(false); refreshFloor(); } }));
+        styleFloorToggle(true);
+
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0)); row.setOpaque(false);
+        row.add(Park.lbl("Floor", Park.bold(12), Park.TEXT_MUTED)); row.add(flrFloorBox);
+        row.add(Park.lbl("Date", Park.bold(12), Park.TEXT_MUTED)); row.add(flrDateBox);
+        row.add(flrBtnMap); row.add(flrBtnList);
+        flrSummary = Park.lbl(" ", Park.bold(12), Park.TEXT_PRIMARY);
+        JPanel head = new JPanel(new BorderLayout(0, 6)); head.setOpaque(false);
+        head.add(row, BorderLayout.NORTH); head.add(flrSummary, BorderLayout.CENTER);
+        p.add(head, BorderLayout.NORTH);
+
+        adminPlan = new FloorPlan();
+        adminPlan.setAdminMode(true);
+        adminPlan.setListener(new FloorPlan.Listener() {
+            public void slotClicked(String slotId) { showSlotDetails(slotId); }
+        });
+        Park.Card mapCard = new Park.Card(new BorderLayout(), 18);
+        mapCard.setBorder(Park.pad(8, 10, 8, 10));
+        mapCard.add(adminPlan, BorderLayout.CENTER);
+
+        flrTable = new JTable(flrModel);
+        styleTable(flrTable, new int[]{60, 60, 150, 110, 90, 90, 110, 130, 100});
+
+        flrCards = new CardLayout();
+        flrCardPanel = new JPanel(flrCards); flrCardPanel.setOpaque(false);
+        flrCardPanel.add(mapCard, "map");
+        flrCardPanel.add(scroll(flrTable), "list");
+        p.add(flrCardPanel, BorderLayout.CENTER);
+        p.add(Park.lbl("Hover a slot for the driver, plate and time left. Click it for all details. Red time = over the paid time.",
+            Park.plain(11), Park.TEXT_MUTED), BorderLayout.SOUTH);
+        return p;
+    }
+
+    private void styleFloorToggle(boolean map) {
+        flrBtnMap.setFill(map ? Park.ACCENT : Park.BTN_IDLE);   flrBtnMap.setForeground(map ? Color.WHITE : Park.TEXT_MUTED);
+        flrBtnList.setFill(map ? Park.BTN_IDLE : Park.ACCENT);  flrBtnList.setForeground(map ? Park.TEXT_MUTED : Color.WHITE);
+    }
+
+    private String floorDate() { return flrDates.get(Math.max(0, flrDateBox.getSelectedIndex())); }
+
+    private void refreshFloor() {
+        if (adminPlan == null) return;
+        long now = System.currentTimeMillis();
+        int floor = flrFloorBox.getSelectedIndex() + 1;
+        String date = floorDate();
+        Map<String, DataStore.ReservationInfo> infos = new HashMap<String, DataStore.ReservationInfo>();
+        int parked = 0, resv = 0, pend = 0, over = 0;
+        for (String slot : Park.slotsOnFloor(floor)) {
+            DataStore.ReservationInfo info = DataStore.activeBooking(date, slot);
+            if (info == null) continue;
+            infos.put(slot, info);
+            if (info.status == DataStore.PARKED) { parked++; if (info.remainingMillis(now) < 0) over++; }
+            else if (info.status == DataStore.PENDING) pend++;
+            else resv++;
+        }
+        adminPlan.setData("", true, infos);
+
+        // everyone who is parked right now, building-wide (the list), shortest time left first
+        List<DataStore.ReservationInfo> live = new ArrayList<DataStore.ReservationInfo>();
+        int overAll = 0;
+        for (DataStore.ReservationInfo r : DataStore.getAllReservations()) {
+            if (r.status != DataStore.PARKED) continue;
+            live.add(r);
+            if (r.remainingMillis(now) < 0) overAll++;
+        }
+        Collections.sort(live, new Comparator<DataStore.ReservationInfo>() {
+            public int compare(DataStore.ReservationInfo a, DataStore.ReservationInfo b) {
+                return Long.valueOf(a.endMillis).compareTo(Long.valueOf(b.endMillis));
+            }
+        });
+        boolean same = live.size() == flrModel.rows.size();
+        for (int i = 0; same && i < live.size(); i++) if (!live.get(i).id.equals(flrModel.rows.get(i).id)) same = false;
+        flrModel.rows = live;
+        if (same) { if (!live.isEmpty()) flrModel.fireTableRowsUpdated(0, live.size() - 1); }
+        else flrModel.fireTableDataChanged();
+
+        flrSummary.setText(Park.floorName(floor) + ", " + Park.shortDate(date) + ":  " + parked + " parked"
+            + (over > 0 ? " (" + over + " over time)" : "") + "  \u00B7  " + resv + " reserved  \u00B7  " + pend + " waiting for approval  \u00B7  "
+            + (Park.SLOTS_PER_FLOOR - infos.size()) + " free        Whole building right now:  " + live.size() + " parked"
+            + (overAll > 0 ? " (" + overAll + " over time)" : ""));
+    }
+
+    private class FloorListModel extends StyledModel {
+        private static final long serialVersionUID = 1L;
+        private final String[] cols = {"Floor", "Slot", "Driver", "Contact", "Plate", "Vehicle", "Paid until", "Time left", "Overtime fee"};
+        List<DataStore.ReservationInfo> rows = new ArrayList<DataStore.ReservationInfo>();
+        public int getRowCount() { return rows.size(); }
+        public int getColumnCount() { return cols.length; }
+        public String getColumnName(int c) { return cols[c]; }
+        public Object getValueAt(int r, int c) {
+            DataStore.ReservationInfo i = rows.get(r);
+            long now = System.currentTimeMillis();
+            switch (c) {
+                case 0: return Park.floorOf(i.slot) + "F";
+                case 1: return Park.localOf(i.slot);
+                case 2: return nameOf(i.user);
+                case 3: return contactOf(i.user);
+                case 4: return Fmt.formatPlate(i.plate);
+                case 5: return Park.isMotoSlot(i.slot) ? "Motorcycle" : "Car";
+                case 6: return Fmt.time(i.endMin() % 1440);
+                case 7: { long rem = i.remainingMillis(now); return rem >= 0 ? Park.hms(rem) + " left" : "+" + Park.hms(-rem) + " over"; }
+                default: { double f = i.shownOvertimeFee(now); return f > 0 ? Park.money(f) : "-"; }
+            }
+        }
+        boolean hot(int r) { return r < rows.size() && rows.get(r).remainingMillis(System.currentTimeMillis()) < 0; }
+        Color fg(int r, int c) {
+            if (r >= rows.size() || c != 7) return Park.TEXT_PRIMARY;
+            long rem = rows.get(r).remainingMillis(System.currentTimeMillis());
+            return rem < 0 ? Park.DANGER : rem <= 5 * 60000L ? Park.WARNING : Park.SUCCESS;
+        }
+    }
+
+    private void showSlotDetails(String slot) {
+        String date = floorDate();
+        DataStore.ReservationInfo r = DataStore.activeBooking(date, slot);
+        String head = "Slot " + slot + "  -  " + Park.floorName(Park.floorOf(slot)) + ", " + Park.slotKind(slot) + "\n" + date + "\n\n";
+        if (r == null) { info(head + "This slot is free all day."); return; }
+        long now = System.currentTimeMillis();
+        String st = r.status == DataStore.PARKED ? (r.hasLeaveRequest() ? "Parked (overtime payment sent, waiting for you)" : "Parked")
+                  : r.status == DataStore.PENDING ? "Waiting for payment approval" : "Reserved";
+        String left = r.status == DataStore.PARKED
+            ? (r.remainingMillis(now) >= 0 ? Park.hms(r.remainingMillis(now)) + " left" : "OVER by " + Park.hms(-r.remainingMillis(now))
+                + "  (overtime " + Park.money(r.shownOvertimeFee(now)) + ")")
+            : r.status == DataStore.RESERVED ? (r.schedStartMillis() > now ? "starts in " + Park.hms(r.schedStartMillis() - now) : Park.hms(r.endMillis - now) + " left") : "-";
+        info(head
+            + "Driver:  " + nameOf(r.user) + (DataStore.isWalkIn(r.user) ? "" : "  (" + r.user + ")") + "\n"
+            + "Contact:  " + contactOf(r.user) + "\n"
+            + "Plate:  " + Fmt.formatPlate(r.plate) + "\n"
+            + "Status:  " + st + "\n"
+            + "Time:  " + Fmt.timeRange(r.startMin, r.endMin()) + "  (" + r.hours + "h paid, " + Park.money(r.price) + ")\n"
+            + "Time left:  " + left + "\n"
+            + "Payment:  " + r.paymentMode + (r.refNo.isEmpty() ? "" : ",  ref " + r.refNo)
+            + (DataStore.isPriorityUser(r.user) ? "\nPWD / senior citizen:  verified" : ""));
     }
 
     // ---------- viewing pictures ----------
