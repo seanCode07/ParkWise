@@ -41,6 +41,8 @@ class MainFrame extends JFrame {
     private final Map<String, String> seenFines = new HashMap<String, String>();  // fee key -> "paid|pending|kind|fee"
     private boolean seenInit = false;
     private int seenPriority = -1;
+    private static final long ALMOST_OVER_MS = 5 * 60000L;
+    private final Set<String> warned5 = new HashSet<String>();      // bookings that already got the "5 minutes left" alert
 
     /** What a booking looked like at the last refresh (used to tell the driver what the admin changed). */
     private static class Snap {
@@ -418,7 +420,8 @@ class MainFrame extends JFrame {
             + "Regular rates: car " + Park.moneyShort(Park.CAR_RATE) + "/hr (reserve " + Park.moneyShort(Park.CAR_RESERVE_FIRST) + " then "
             + Park.moneyShort(Park.CAR_RATE) + "), motorcycle " + Park.moneyShort(Park.MOTO_RATE) + "/hr (reserve "
             + Park.moneyShort(Park.MOTO_RESERVE_FIRST) + " then " + Park.moneyShort(Park.MOTO_RATE) + ").\n"
-            + "Overtime is billed at the regular hourly rate.",
+            + "Overtime is billed at the same hourly rate as Park Now (PWD / senior citizen: car " + Park.moneyShort(Park.CAR_PRIORITY_RATE)
+            + ", motorcycle " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + ").",
             "Rates", JOptionPane.INFORMATION_MESSAGE);
     }
 
@@ -503,9 +506,19 @@ class MainFrame extends JFrame {
         return wrap;
     }
 
+    private CardLayout mineCards;
+    private JPanel mineCardPanel;
+    private Park.RoundButton mineBtnNow, mineBtnHist;
+    private JTable histTable;
+    private javax.swing.table.DefaultTableModel histModel;
+    private final List<String> histIds = new ArrayList<String>();
+    private JLabel histInfo;
+
     private JPanel buildMineCard() {
         Park.Card mine = new Park.Card(new BorderLayout(0, 10), 20);
         mine.setBorder(Park.pad(16, 18, 16, 18));
+
+        // current bookings and fees
         myList = new JPanel(); myList.setOpaque(false); myList.setLayout(new BoxLayout(myList, BoxLayout.Y_AXIS));
         JPanel wrapper = new Park.ScrollView(new BorderLayout());
         wrapper.add(myList, BorderLayout.NORTH);
@@ -514,9 +527,121 @@ class MainFrame extends JFrame {
         sp.setBorder(BorderFactory.createEmptyBorder());
         sp.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         sp.getVerticalScrollBar().setUnitIncrement(14);
-        mine.add(Park.lbl("My Parking", Park.bold(17), Park.TEXT_PRIMARY), BorderLayout.NORTH);
-        mine.add(sp, BorderLayout.CENTER);
+
+        mineCards = new CardLayout();
+        mineCardPanel = new JPanel(mineCards); mineCardPanel.setOpaque(false);
+        mineCardPanel.add(sp, "now");
+        mineCardPanel.add(buildHistoryPanel(), "hist");
+
+        mineBtnNow = new Park.RoundButton("Current", Park.ACCENT, Color.WHITE);
+        mineBtnHist = new Park.RoundButton("History", Park.BTN_IDLE, Park.TEXT_MUTED);
+        for (Park.RoundButton b : new Park.RoundButton[]{mineBtnNow, mineBtnHist}) {
+            b.setFont(Park.bold(12)); b.setRadius(10); b.setPreferredSize(new Dimension(120, 32));
+        }
+        mineBtnNow.addActionListener(Fmt.act(new Runnable() { public void run() { showMine(true); } }));
+        mineBtnHist.addActionListener(Fmt.act(new Runnable() { public void run() { showMine(false); } }));
+        JPanel head = new JPanel(new BorderLayout()); head.setOpaque(false);
+        head.add(Park.lbl("My Parking", Park.bold(17), Park.TEXT_PRIMARY), BorderLayout.WEST);
+        JPanel toggles = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0)); toggles.setOpaque(false);
+        toggles.add(mineBtnNow); toggles.add(mineBtnHist);
+        head.add(toggles, BorderLayout.EAST);
+
+        mine.add(head, BorderLayout.NORTH);
+        mine.add(mineCardPanel, BorderLayout.CENTER);
         return mine;
+    }
+
+    private void showMine(boolean current) {
+        mineBtnNow.setFill(current ? Park.ACCENT : Park.BTN_IDLE);   mineBtnNow.setForeground(current ? Color.WHITE : Park.TEXT_MUTED);
+        mineBtnHist.setFill(current ? Park.BTN_IDLE : Park.ACCENT);  mineBtnHist.setForeground(current ? Park.TEXT_MUTED : Color.WHITE);
+        mineCards.show(mineCardPanel, current ? "now" : "hist");
+        if (!current) refreshHistory();
+    }
+
+    /** My past parking sessions: when I parked, when I left, how long, what I paid. I can remove entries from my own view. */
+    private JPanel buildHistoryPanel() {
+        JPanel p = new JPanel(new BorderLayout(0, 8)); p.setOpaque(false);
+        histModel = new javax.swing.table.DefaultTableModel(
+                new String[]{"Date", "Slot", "Plate", "Parked at", "Left at", "Paid", "Total fee", "Result"}, 0) {
+            private static final long serialVersionUID = 1L;
+            public boolean isCellEditable(int r, int c) { return false; }
+        };
+        histTable = new JTable(histModel);
+        histTable.setRowHeight(30);
+        histTable.setBackground(Park.BG_PANEL); histTable.setForeground(Park.TEXT_PRIMARY);
+        histTable.setFont(Park.plain(12));
+        histTable.setGridColor(Park.BORDER);
+        histTable.setSelectionBackground(Park.SEL_BG); histTable.setSelectionForeground(Park.TEXT_PRIMARY);
+        histTable.setFillsViewportHeight(true);
+        histTable.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
+        histTable.getTableHeader().setBackground(Park.BG_CARD_HI);
+        histTable.getTableHeader().setForeground(Park.TEXT_PRIMARY);
+        histTable.getTableHeader().setFont(Park.bold(12));
+        int[] w = {90, 70, 90, 140, 140, 50, 80, 120};
+        for (int i = 0; i < w.length; i++) histTable.getColumnModel().getColumn(i).setPreferredWidth(w[i]);
+        JScrollPane hs = new JScrollPane(histTable);
+        hs.setBorder(BorderFactory.createLineBorder(Park.BORDER));
+        hs.getViewport().setBackground(Park.BG_PANEL);
+        p.add(hs, BorderLayout.CENTER);
+
+        histInfo = Park.lbl(" ", Park.plain(11), Park.TEXT_MUTED);
+        Park.RoundButton remove = new Park.RoundButton("Remove selected", Park.DANGER, Color.WHITE);
+        remove.setFont(Park.bold(12)); remove.setRadius(10); remove.setPreferredSize(new Dimension(170, 34));
+        remove.addActionListener(Fmt.act(new Runnable() { public void run() { removeSelectedHistory(); } }));
+        JPanel south = new JPanel(new BorderLayout()); south.setOpaque(false);
+        south.add(histInfo, BorderLayout.CENTER); south.add(remove, BorderLayout.EAST);
+        p.add(south, BorderLayout.SOUTH);
+        return p;
+    }
+
+    private static String shortStamp(String millis) {
+        try {
+            long m = Long.parseLong(millis);
+            return m <= 0 ? "-" : new java.text.SimpleDateFormat("MMM dd  h:mm a", java.util.Locale.ENGLISH).format(new java.util.Date(m));
+        } catch (NumberFormatException e) { return "-"; }
+    }
+
+    private static String outcomeText(String o) {
+        if ("COMPLETED".equals(o)) return "Completed";
+        if ("CANCELLED".equals(o)) return "Cancelled";
+        if ("REJECTED".equals(o)) return "Payment rejected";
+        if ("REMOVED".equals(o)) return "Removed by admin";
+        return o;
+    }
+
+    private void refreshHistory() {
+        if (histModel == null) return;
+        List<String[]> rows = DataStore.getUserHistory(username);
+        histModel.setRowCount(0);
+        histIds.clear();
+        for (int i = rows.size() - 1; i >= 0; i--) {         // newest first
+            String[] h = rows.get(i);
+            histIds.add(h[0]);
+            String total = "COMPLETED".equals(h[2]) ? fmtMoney(h[14]) : "-";
+            histModel.addRow(new Object[]{Park.shortDate(h[8]), h[7], Fmt.formatPlate(h[6]), shortStamp(h[9]), shortStamp(h[10]),
+                    h[11] + "h", total, outcomeText(h[2])});
+        }
+        mineBtnHist.setText(rows.isEmpty() ? "History" : "History (" + rows.size() + ")");
+        histInfo.setText(rows.isEmpty() ? "Your finished parking sessions will appear here."
+            : rows.size() + " session" + (rows.size() == 1 ? "" : "s") + ". Select rows (Ctrl or Shift for several), then Remove selected. "
+              + "This only clears your own list.");
+    }
+
+    private static String fmtMoney(String v) {
+        try { return Park.money(Double.parseDouble(v)); } catch (NumberFormatException e) { return v; }
+    }
+
+    private void removeSelectedHistory() {
+        int[] sel = histTable.getSelectedRows();
+        if (sel.length == 0) { JOptionPane.showMessageDialog(this, "Select one or more sessions in the list first.", "Remove History", JOptionPane.INFORMATION_MESSAGE); return; }
+        int ok = JOptionPane.showConfirmDialog(this, "Remove " + sel.length + " session" + (sel.length == 1 ? "" : "s") + " from your history?\n"
+            + "They disappear from your list only. The parking management keeps its own records.",
+            "Remove History", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (ok != JOptionPane.YES_OPTION) return;
+        List<String> ids = new ArrayList<String>();
+        for (int r : sel) if (r >= 0 && r < histIds.size()) ids.add(histIds.get(r));
+        DataStore.hideHistory(username, ids);
+        refreshHistory();
     }
 
     // ---------- refreshing ----------
@@ -723,6 +848,7 @@ class MainFrame extends JFrame {
             myList.add(buildRow(info)); myList.add(Box.createVerticalStrut(8));
         }
         myList.revalidate(); myList.repaint();
+        refreshHistory();
         int n = list.size() + unpaid.size();
         tabMine.setText("My Parking" + (n > 0 ? " (" + n + ")" : ""));
         tickLive();
@@ -832,13 +958,28 @@ class MainFrame extends JFrame {
                 lr.lbl.setForeground(Park.DANGER);
             }
         }
+        // heads-up when the paid time is almost over
+        for (DataStore.ReservationInfo r : DataStore.getReservationsForUser(username)) {
+            long left = r.remainingMillis(now);
+            if (r.status != DataStore.PARKED || r.hasLeaveRequest() || left <= 0 || left > ALMOST_OVER_MS) continue;
+            if (warned5.add(r.id)) {
+                int mins = (int) ((left + 59999L) / 60000L);
+                Toolkit.getDefaultToolkit().beep();
+                notice("Your Parking Time Is Almost Over",
+                    "Only " + mins + " minute" + (mins == 1 ? "" : "s") + " left in slot " + r.slot + " (plate " + Fmt.formatPlate(r.plate) + ").\n"
+                    + "Paid time ends at " + Fmt.time(Fmt.minuteOfDay(r.endMillis)) + ".\n\n"
+                    + "Please drive out and press Leave in My Parking before then.\n"
+                    + "After a " + DataStore.GRACE_MINUTES + "-minute grace period, every extra hour is billed at " + Park.money(r.overtimeRate()) + ".",
+                    JOptionPane.WARNING_MESSAGE);
+            }
+        }
         for (DataStore.ReservationInfo r : DataStore.getReservationsForUser(username)) {
             if (r.status != DataStore.PARKED || r.remainingMillis(now) > 0) continue;
             if (notified.add(r.id)) {
                 notice("Parking Time Is Up",
                     "Your paid parking time for slot " + r.slot + " has ended.\n"
                     + "After a " + DataStore.GRACE_MINUTES + "-minute grace period, every extra hour is billed at "
-                    + Park.money(Park.rateOf(r.slot)) + ".\nTo leave, pay the extra charge under My Parking and wait for the admin to validate it.",
+                    + Park.money(r.overtimeRate()) + ".\nTo leave, pay the extra charge under My Parking and wait for the admin to validate it.",
                     JOptionPane.WARNING_MESSAGE);
             }
         }
@@ -934,7 +1075,7 @@ class MainFrame extends JFrame {
                     + "Paid time:       " + info.hours + "h\n"
                     + "Time parked:    " + Park.hms(now - info.startMillis) + "\n"
                     + "Overtime:         " + Park.hms(info.overStayMillis(now)) + "  ("
-                    + info.billableHours(now) + "h billed at " + Park.money(Park.rateOf(info.slot)) + ")\n\n"
+                    + info.billableHours(now) + "h billed at " + Park.money(info.overtimeRate()) + ")\n\n"
                     + "Total extra charge: " + Park.money(fee) + "\n\n"
                     + "Pay the total extra charge first. The admin must validate your payment\n"
                     + "before you are approved to leave.";

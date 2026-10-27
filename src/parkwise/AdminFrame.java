@@ -63,6 +63,9 @@ class AdminFrame extends JFrame {
     private JLabel admCountLbl, recCountLbl;
     private JTextField recSearch;
     private boolean recHistory = true;
+    private boolean recShowRemoved = false;
+    private final List<String> recIds = new ArrayList<String>();      // history record id of each row shown (parallel to recModel.rows)
+    private Park.RoundButton recBtnShowRem;
     private Park.RoundButton recBtnHist, recBtnAudit;
 
     AdminFrame(String adminName) {
@@ -538,6 +541,7 @@ class AdminFrame extends JFrame {
         if ("PRIORITY".equals(type))   return "PWD / Senior ID";
         if ("PLATE_EDIT".equals(type)) return "Plate changed";
         if ("ADMIN_REQUEST".equals(type)) return "Admin request";
+        if ("ADMIN_RESET".equals(type)) return "Admin password reset";
         if ("ACCOUNT_DELETED".equals(type)) return "Account deleted";
         return type;
     }
@@ -878,20 +882,9 @@ class AdminFrame extends JFrame {
             info("No other slot is free during " + Fmt.timeRange(r.startMin, r.endMin()) + ".");
             return;
         }
-        final SlotPicker picker = new SlotPicker(free);
-        JPanel wrap = new JPanel(new BorderLayout(0, 12)); wrap.setOpaque(false);
-        wrap.add(Park.lbl(Park.lines("<b>Move this booking to a different slot in the system.</b>",
-                "Use it when the car is physically in another slot than the one booked.",
-                "",
-                "Driver:   " + nameOf(r.user) + "  (" + Fmt.formatPlate(r.plate) + ")",
-                "Now in:   slot " + r.slot + "  \u00B7  " + Fmt.timeRange(r.startMin, r.endMin()),
-                "The driver's screen updates automatically."), Park.plain(12), Park.TEXT_PRIMARY), BorderLayout.NORTH);
-        wrap.add(picker.panel, BorderLayout.CENTER);
-        wrap.add(Park.lbl("Only free slots are listed.", Park.plain(12), Park.TEXT_MUTED), BorderLayout.SOUTH);
-        int ok = JOptionPane.showConfirmDialog(this, wrap, "Move to Another Slot",
-            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (ok != JOptionPane.OK_OPTION) return;
-        String newSlot = picker.selected();
+        SlotMapDialog dlg = new SlotMapDialog(this, r, nameOf(r.user) + " (" + Fmt.formatPlate(r.plate) + ")");
+        dlg.setVisible(true);
+        String newSlot = dlg.chosen;
         if (newSlot == null) return;
         String err = DataStore.moveBooking(r.id, newSlot);
         if (err != null) { info(err); return; }
@@ -1473,7 +1466,7 @@ class AdminFrame extends JFrame {
         p.add(scroll(admTable), BorderLayout.CENTER);
         admCountLbl = Park.lbl(" ", Park.plain(12), Park.TEXT_MUTED);
         Park.RoundButton ok = actionBtn("Approve Request", Park.SUCCESS, Park.BG_DARK, 160,
-            "Let this person log in as an administrator. Only an existing admin can do this.", new Runnable() { public void run() { adminDecision(true); } });
+            "Let this person log in as an administrator, or issue a temporary password for a reset request. Only another admin can do this.", new Runnable() { public void run() { adminDecision(true); } });
         Park.RoundButton no = actionBtn("Reject Request", Park.WARNING, Park.BG_DARK, 150,
             "Decline the request. The person cannot log in as an administrator.", new Runnable() { public void run() { adminDecision(false); } });
         Park.RoundButton rm = actionBtn("Remove Admin", Park.DANGER, Color.WHITE, 150,
@@ -1494,10 +1487,11 @@ class AdminFrame extends JFrame {
         public int getColumnCount() { return cols.length; }
         public String getColumnName(int c) { return cols[c]; }
         public Object getValueAt(int r, int c) { return rows.get(r)[c]; }
-        boolean hot(int r) { return r < rows.size() && "req".equals(rows.get(r)[5]); }
+        private boolean waiting(int r) { String k = rows.get(r)[5]; return "req".equals(k) || "reset".equals(k); }
+        boolean hot(int r) { return r < rows.size() && waiting(r); }
         Color fg(int r, int c) {
             if (r >= rows.size() || c != 2) return Park.TEXT_PRIMARY;
-            return "req".equals(rows.get(r)[5]) ? Park.WARNING : Park.SUCCESS;
+            return waiting(r) ? Park.WARNING : Park.SUCCESS;
         }
     }
 
@@ -1507,8 +1501,12 @@ class AdminFrame extends JFrame {
         for (int r : admTable.getSelectedRows()) if (r >= 0 && r < admModel.rows.size()) sel.add(admModel.rows.get(r)[0]);
         List<String[]> rows = new ArrayList<String[]>();
         List<String[]> reqs = DataStore.getAdminRequests();
+        List<String[]> resets = DataStore.getAdminResets();
         for (String[] q : reqs)
             rows.add(new String[]{q[0], q[1], "Waiting for approval", "requested", f.format(new java.util.Date(Long.parseLong(q[2]))), "req"});
+        for (String[] q : resets)
+            rows.add(new String[]{q[0], q[1], "Password reset requested", "requested", f.format(new java.util.Date(Long.parseLong(q[2]))), "reset"});
+        int pend = reqs.size() + resets.size();
         for (String[] a : DataStore.getAdmins()) {
             boolean main = DataStore.ADMIN_USER.equals(a[0]);
             rows.add(new String[]{a[0], a[1], main ? "Active (main account)" : "Active", a[2],
@@ -1517,25 +1515,44 @@ class AdminFrame extends JFrame {
         admModel.rows = rows;
         admModel.fireTableDataChanged();
         for (int i = 0; i < rows.size(); i++) if (sel.contains(rows.get(i)[0])) admTable.addRowSelectionInterval(i, i);
-        admCountLbl.setText((rows.size() - reqs.size()) + " administrator" + (rows.size() - reqs.size() == 1 ? "" : "s") + ", " + reqs.size()
-            + " waiting for approval. A new administrator is only added after an existing admin approves.");
-        tabAdm.setText(reqs.isEmpty() ? "Admins" : "Admins (" + reqs.size() + ")");
+        int admins = rows.size() - pend;
+        admCountLbl.setText(admins + " administrator" + (admins == 1 ? "" : "s") + ", " + pend
+            + " waiting (new admins and password resets). Another administrator has to approve each one.");
+        tabAdm.setText(pend == 0 ? "Admins" : "Admins (" + pend + ")");
     }
 
     private void adminDecision(boolean approve) {
         List<String[]> pick = new ArrayList<String[]>();
-        for (int r : admTable.getSelectedRows()) if (r >= 0 && r < admModel.rows.size() && "req".equals(admModel.rows.get(r)[5])) pick.add(admModel.rows.get(r));
-        if (pick.isEmpty()) { info("Select one or more requests that are \"Waiting for approval\" first."); return; }
+        for (int r : admTable.getSelectedRows()) {
+            if (r < 0 || r >= admModel.rows.size()) continue;
+            String k = admModel.rows.get(r)[5];
+            if ("req".equals(k) || "reset".equals(k)) pick.add(admModel.rows.get(r));
+        }
+        if (pick.isEmpty()) { info("Select one or more rows that are waiting (\"Waiting for approval\" or \"Password reset requested\") first."); return; }
         List<String> lines = new ArrayList<String>();
-        for (String[] q : pick) lines.add(q[1] + "  (" + q[0] + ")");
+        for (String[] q : pick) lines.add(q[1] + "  (" + q[0] + ")  -  " + ("reset".equals(q[5]) ? "password reset" : "new administrator"));
         int ok = JOptionPane.showConfirmDialog(this,
-            listMessage((approve ? "Approve " : "Reject ") + pick.size() + " administrator request" + (pick.size() == 1 ? "" : "s") + "?", lines,
-                approve ? "They will be able to log in as administrators and see everything in this window." : "They will not get administrator access."),
+            listMessage((approve ? "Approve " : "Reject ") + pick.size() + " request" + (pick.size() == 1 ? "" : "s") + "?", lines,
+                approve ? "New administrators can then log in and see everything in this window.\nFor a password reset you get a temporary password to hand over in person."
+                        : "New administrators do not get access. Password resets are cancelled."),
             approve ? "Approve Request" : "Reject Request", JOptionPane.YES_NO_OPTION);
         if (ok != JOptionPane.YES_OPTION) return;
         StringBuilder errs = new StringBuilder();
         for (String[] q : pick) {
-            String err = approve ? DataStore.approveAdminRequest(q[0]) : DataStore.rejectAdminRequest(q[0]);
+            boolean reset = "reset".equals(q[5]);
+            String err;
+            if (reset && approve) {
+                String[] res = DataStore.approveAdminReset(q[0]);
+                err = res[0];
+                if (err == null)
+                    JOptionPane.showMessageDialog(this, "Temporary password for " + q[1] + " (" + q[0] + "):\n\n        " + res[1]
+                        + "\n\nGive it to them in person. They must choose a new password the first time they log in.",
+                        "Temporary Password", JOptionPane.INFORMATION_MESSAGE);
+            } else if (reset) {
+                err = DataStore.rejectAdminReset(q[0]);
+            } else {
+                err = approve ? DataStore.approveAdminRequest(q[0]) : DataStore.rejectAdminRequest(q[0]);
+            }
             if (err != null) errs.append(q[0]).append(": ").append(err).append('\n');
         }
         refreshAdmins();
@@ -1591,7 +1608,19 @@ class AdminFrame extends JFrame {
         styleTable(recTable, new int[]{150, 130, 110, 120, 110, 160, 120});
         p.add(scroll(recTable), BorderLayout.CENTER);
         recCountLbl = Park.lbl(" ", Park.plain(12), Park.TEXT_MUTED);
-        p.add(recCountLbl, BorderLayout.SOUTH);
+        Park.RoundButton rm = actionBtn("Remove selected", Park.DANGER, Color.WHITE, 160,
+            "Hide the selected session history rows from this screen. The permanent record stays in the history file and the removal is written to the audit log.",
+            new Runnable() { public void run() { removeSelectedRecords(); } });
+        recBtnShowRem = actionBtn("Show removed: OFF", Park.BTN_IDLE, Park.TEXT_PRIMARY, 170,
+            "Also list the rows that were removed from this screen (marked \"removed\").",
+            new Runnable() { public void run() { recShowRemoved = !recShowRemoved; refreshRecords(); } });
+        Park.RoundButton restore = actionBtn("Restore selected", Park.SUCCESS, Park.BG_DARK, 160,
+            "Bring removed rows back (turn on Show removed first).", new Runnable() { public void run() { restoreSelectedRecords(); } });
+        JPanel rbtns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0)); rbtns.setOpaque(false);
+        rbtns.add(recBtnShowRem); rbtns.add(restore); rbtns.add(rm);
+        JPanel south = new JPanel(new BorderLayout(0, 6)); south.setOpaque(false);
+        south.add(recCountLbl, BorderLayout.NORTH); south.add(rbtns, BorderLayout.CENTER);
+        p.add(south, BorderLayout.SOUTH);
         return p;
     }
 
@@ -1635,10 +1664,14 @@ class AdminFrame extends JFrame {
         List<String[]> shown = new ArrayList<String[]>();
         String[] terms = recSearch.getText().trim().toLowerCase().split("\\s+");
         List<String[]> raw = h ? DataStore.getHistory() : DataStore.getAudit();
+        Set<String> hidden = h ? DataStore.hiddenHistory("ADMIN") : new HashSet<String>();
+        recIds.clear();
         for (int i = raw.size() - 1; i >= 0; i--) {          // newest first
             String[] x = raw.get(i), d;
+            boolean isHidden = h && hidden.contains(x[0]);
+            if (isHidden && !recShowRemoved) continue;
             if (h) {
-                d = new String[]{stamp(x[1]), x[2], x[3], x[4], x[5], Fmt.formatPlate(x[6]), x[7], x[8], stamp(x[9]), stamp(x[10]),
+                d = new String[]{stamp(x[1]), x[2] + (isHidden ? " (removed)" : ""), x[3], x[4], x[5], Fmt.formatPlate(x[6]), x[7], x[8], stamp(x[9]), stamp(x[10]),
                     x[11] + "h", fee(x[12]), fee(x[13]), fee(x[14]), x[15], x[16], x[17]};
             } else {
                 d = new String[]{stamp(x[1]), x[2], x[3], x[4], x[5]};
@@ -1647,7 +1680,7 @@ class AdminFrame extends JFrame {
             for (String c : d) all.append(c.toLowerCase()).append(' ');
             boolean ok = true;
             for (String t : terms) if (!t.isEmpty() && all.indexOf(t) < 0) { ok = false; break; }
-            if (ok) shown.add(d);
+            if (ok) { shown.add(d); recIds.add(h ? x[0] : ""); }
         }
         recModel.cols = h
             ? new String[]{"Recorded", "Outcome", "Driver", "Name", "Contact", "Plate", "Slot", "Parking date", "Entry", "Exit", "Paid", "Fee", "Overtime", "Total", "Payment", "Ref. No.", "Ended by"}
@@ -1658,10 +1691,37 @@ class AdminFrame extends JFrame {
                     : new int[]{150, 110, 80, 200, 600};
         recTable.setAutoResizeMode(h ? JTable.AUTO_RESIZE_OFF : JTable.AUTO_RESIZE_LAST_COLUMN);
         for (int i = 0; i < w.length && i < recTable.getColumnCount(); i++) recTable.getColumnModel().getColumn(i).setPreferredWidth(w[i]);
+        recBtnShowRem.setText(recShowRemoved ? "Show removed: ON" : "Show removed: OFF");
         recCountLbl.setText(shown.size() + " of " + raw.size() + " record" + (raw.size() == 1 ? "" : "s") + " shown.  "
             + (h ? "Every session that ends (finished, cancelled, rejected or removed) is kept here permanently."
                  : "Every admin action and key driver action is kept here permanently, with who did it.")
             + "  Use Verify Integrity to detect edits made outside the program.");
+    }
+
+    private List<String> selectedRecordIds() {
+        List<String> ids = new ArrayList<String>();
+        for (int r : recTable.getSelectedRows()) if (r >= 0 && r < recIds.size() && !recIds.get(r).isEmpty()) ids.add(recIds.get(r));
+        return ids;
+    }
+
+    private void removeSelectedRecords() {
+        if (!recHistory) { info("Audit log entries cannot be removed. They keep every action accountable.\nOnly session history rows can be removed."); return; }
+        List<String> ids = selectedRecordIds();
+        if (ids.isEmpty()) { info("Select one or more session history rows first (Ctrl or Shift for several)."); return; }
+        int ok = JOptionPane.showConfirmDialog(this, "Remove " + ids.size() + " session history row" + (ids.size() == 1 ? "" : "s") + " from this screen?\n"
+            + "The permanent record is kept (turn on Show removed to see them) and the removal is logged in the audit log.",
+            "Remove History", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (ok != JOptionPane.YES_OPTION) return;
+        DataStore.hideHistory("ADMIN", ids);
+        refreshRecords();
+    }
+
+    private void restoreSelectedRecords() {
+        if (!recHistory) { info("Switch to Session History first."); return; }
+        List<String> ids = selectedRecordIds();
+        if (ids.isEmpty()) { info("Turn on Show removed, then select the rows to bring back."); return; }
+        DataStore.restoreHistory(ids);
+        refreshRecords();
     }
 
     private void exportRecords() {

@@ -26,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * All data lives in the "parkwise_data" folder. Several copies of the program (for example one
@@ -77,6 +78,9 @@ public class DataStore {
     private static final File AUDIT_FILE  = new File(DIR, "audit.txt");        // permanent, append-only, hash-chained
     private static final File HISTORY_FILE = new File(DIR, "history.txt");     // permanent, append-only, hash-chained
     private static final File UPLOAD_DIR  = new File(DIR, "uploads");          // ID photos and payment receipts
+    private static final File RESET_FILE  = new File(DIR, "admin_resets.txt");        // admins waiting for another admin to reset their password
+    private static final File MUST_FILE   = new File(DIR, "admin_mustchange.txt");     // admins that must choose a new password at the next login
+    private static final File CODE_FILE   = new File(DIR, "admin_recovery_code.txt");  // recovery code for a locked-out administrator
     private static final File LOCK_FILE   = new File(DIR, "parkwise.lock");
 
     private static final Map<String, User> users = new HashMap<String, User>();
@@ -86,6 +90,8 @@ public class DataStore {
     private static final List<String[]> plates = new ArrayList<String[]>();     // {user, plate}
     private static final Map<String, String[]> admins = new LinkedHashMap<String, String[]>();   // id -> {id, hash, name, createdBy, millis}
     private static final List<String[]> adminReqs = new ArrayList<String[]>();                    // {id, hash, name, millis}
+    private static final List<String[]> adminResets = new ArrayList<String[]>();                  // {id, millis}
+    private static final Set<String> mustChange = new java.util.HashSet<String>();
     private static final Random RND = new Random();
 
     private static long loadedStamp = Long.MIN_VALUE;
@@ -110,6 +116,10 @@ public class DataStore {
         }
     }
 
+    static {
+        ensureRecoveryCode();
+    }
+
     // ---------------- Cross-window sync ----------------
 
     /** Changes whenever the data changed (by this window or by another running copy). Poll it to refresh screens. */
@@ -122,7 +132,7 @@ public class DataStore {
 
     private static long stamp() {
         long s = 0L;
-        File[] all = {USERS_FILE, RES_FILE, FINES_FILE, EVENTS_FILE, PLATES_FILE, ADMINS_FILE, REQ_FILE};
+        File[] all = {USERS_FILE, RES_FILE, FINES_FILE, EVENTS_FILE, PLATES_FILE, ADMINS_FILE, REQ_FILE, RESET_FILE, MUST_FILE};
         for (File f : all) s = s * 961L + fileStamp(f);
         return s;
     }
@@ -285,6 +295,91 @@ public class DataStore {
      *  hoursPaid, baseFee, overtimeFee, totalFee, paymentMode, refNo, endedBy}. Oldest first. */
     public static synchronized List<String[]> getHistory() { return readChained(HISTORY_FILE); }
 
+    // ---- removing entries from a history view ----
+    // The permanent hash-chained history file is never changed. "Removing" an entry only hides it from the view of the person who removed it
+    // (a driver: their own My Parking history; an admin: the Records screen, with a "show removed" option to bring it back). Each removal is audited.
+    private static final File HIDDEN_FILE = new File(DIR, "history_hidden.txt");   // recordId \t viewer \t millis
+
+    private static List<String[]> readHidden() {
+        List<String[]> out = new ArrayList<String[]>();
+        for (String line : readLines(HIDDEN_FILE)) {
+            String[] p = line.split("\t", -1);
+            if (p.length == 3) out.add(p);
+        }
+        return out;
+    }
+
+    /** Ids of the history entries this viewer removed from their view. Viewer = a driver's username, or "ADMIN" for the admins' Records screen. */
+    public static synchronized Set<String> hiddenHistory(String viewer) {
+        Set<String> ids = new java.util.HashSet<String>();
+        for (String[] h : readHidden()) if (h[1].equals(viewer)) ids.add(h[0]);
+        return ids;
+    }
+
+    /** A driver's own finished sessions (newest last), without the ones they removed. {id, outcome, slot, plate, date, entry, exit, hours, fee, overtime, total, payment, ref, endedBy} */
+    public static synchronized List<String[]> getUserHistory(String user) {
+        Set<String> hidden = hiddenHistory(user);
+        List<String[]> out = new ArrayList<String[]>();
+        for (String[] h : readChained(HISTORY_FILE))
+            if (h.length >= 18 && h[3].equals(user) && !hidden.contains(h[0])) out.add(h);
+        return out;
+    }
+
+    /** Hides history entries from a view. A driver can only hide their own. Returns how many were hidden. */
+    public static synchronized int hideHistory(String viewer, List<String> ids) {
+        begin();
+        try {
+            boolean admin = "ADMIN".equals(viewer);
+            if (admin && !"ADMIN".equals(actorRole)) return 0;
+            if (!admin && !viewer.equals(actor)) return 0;
+            Map<String, String> owner = new HashMap<String, String>();
+            for (String[] h : readChained(HISTORY_FILE)) if (h.length >= 4) owner.put(h[0], h[3]);
+            Set<String> already = hiddenHistory(viewer);
+            StringBuilder sb = new StringBuilder();
+            int n = 0;
+            long now = System.currentTimeMillis();
+            for (String id : ids) {
+                if (!owner.containsKey(id) || already.contains(id)) continue;
+                if (!admin && !owner.get(id).equals(viewer)) continue;
+                sb.append(id).append('\t').append(viewer).append('\t').append(now).append('\n');
+                n++;
+            }
+            if (n > 0) {
+                try {
+                    DIR.mkdirs();
+                    Files.write(HIDDEN_FILE.toPath(), sb.toString().getBytes("UTF-8"),
+                            java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+                } catch (IOException e) { e.printStackTrace(); return 0; }
+                auditLocked("HISTORY_REMOVED", (admin ? "Admin removed " : "Driver removed ") + n + " session history entr" + (n == 1 ? "y" : "ies")
+                        + " from " + (admin ? "the Records view" : "their My Parking history"));
+            }
+            return n;
+        } finally {
+            end();
+        }
+    }
+
+    /** Admin brings removed history entries back into the Records view. */
+    public static synchronized int restoreHistory(List<String> ids) {
+        begin();
+        try {
+            if (!"ADMIN".equals(actorRole)) return 0;
+            List<String> keep = new ArrayList<String>();
+            int n = 0;
+            for (String[] h : readHidden()) {
+                if (h[1].equals("ADMIN") && ids.contains(h[0])) { n++; continue; }
+                keep.add(h[0] + "\t" + h[1] + "\t" + h[2]);
+            }
+            if (n > 0) {
+                writeAtomic(HIDDEN_FILE, keep);
+                auditLocked("HISTORY_RESTORED", "Admin restored " + n + " session history entr" + (n == 1 ? "y" : "ies") + " to the Records view");
+            }
+            return n;
+        } finally {
+            end();
+        }
+    }
+
     private static String verifyFile(File f, String label) {
         if (!f.exists()) return label + ": no records yet.";
         String prev = "GENESIS";
@@ -427,6 +522,20 @@ public class DataStore {
         User u = findUser(identifier);
         if (u == null || isAdmin(u.id) || u.phone.isEmpty()) return null;
         return digits(u.phone).equals(digits(phone)) ? u.id : null;
+    }
+
+    /**
+     * Forgot password, step 1 (alternative): the USERNAME and the e-mail address given at sign-up must both match.
+     * Used when the driver can no longer use the registered mobile number. The username must be typed (an e-mail in the
+     * first box would prove nothing), so accounts whose username is their e-mail cannot use this way.
+     */
+    public static synchronized String findForRecoveryByEmail(String username, String email) {
+        sync(true);
+        String id = clean(username).toLowerCase();
+        if (id.isEmpty() || id.contains("@") || isAdmin(id)) return null;
+        User u = users.get(id);
+        if (u == null || u.email.isEmpty()) return null;
+        return u.email.equalsIgnoreCase(clean(email)) ? u.id : null;
     }
 
     /** Forgot password, step 2: sets a new password. Returns null on success. */
@@ -718,7 +827,8 @@ public class DataStore {
                         u.priorityType, u.priorityId, u.birth, u.priorityStatus, u.proofFile));
                 saveUsers();
             }
-            auditAsLocked(id, isAdmin(id) ? "ADMIN" : "USER", "PASSWORD_CHANGED", "Password changed in Settings");
+            if (mustChange.remove(id)) saveMustChange();
+            auditAsLocked(id, isAdmin(id) ? "ADMIN" : "USER", "PASSWORD_CHANGED", "Password changed");
             return null;
         } finally {
             end();
@@ -874,6 +984,159 @@ public class DataStore {
             if (a == null) return "That administrator no longer exists.";
             saveAdmins();
             auditLocked("ADMIN_REMOVED", "Administrator " + id + " ('" + a[2] + "') removed");
+            return null;
+        } finally {
+            end();
+        }
+    }
+
+    // ---------------- Forgotten administrator password ----------------
+    // Two ways back in: (1) another administrator approves a reset request and hands over a temporary password,
+    // (2) the recovery code kept in parkwise_data/admin_recovery_code.txt (for a lone or locked-out administrator).
+
+    private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    private static String randomCode(int len, boolean groups) {
+        java.security.SecureRandom sr = new java.security.SecureRandom();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) {
+            if (groups && i > 0 && i % 4 == 0) sb.append('-');
+            sb.append(CODE_ALPHABET.charAt(sr.nextInt(CODE_ALPHABET.length())));
+        }
+        return sb.toString();
+    }
+
+    private static String readRecoveryCode() {
+        for (String line : readLines(CODE_FILE)) if (line.startsWith("CODE:")) return line.substring(5).trim();
+        return null;
+    }
+
+    private static String writeNewRecoveryCode() {
+        String code = randomCode(12, true);
+        List<String> lines = new ArrayList<String>();
+        lines.add("ParkWise administrator recovery code");
+        lines.add("Use it on the Administrator login screen: Forgot password > Use the recovery code.");
+        lines.add("Keep this file private. The code changes every time it is used.");
+        lines.add("CODE: " + code);
+        try {
+            DIR.mkdirs();
+            Files.write(CODE_FILE.toPath(), (String.join("\n", lines) + "\n").getBytes("UTF-8"));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return code;
+    }
+
+    private static void ensureRecoveryCode() {
+        if (readRecoveryCode() == null) writeNewRecoveryCode();
+    }
+
+    private static boolean isAdminId(String id) { return ADMIN_USER.equals(id) || admins.containsKey(id); }
+
+    private static void setAdminHash(String id, String newHash) {
+        if (ADMIN_USER.equals(id)) {
+            User u = users.get(ADMIN_USER);
+            if (u != null) {
+                users.put(ADMIN_USER, new User(u.id, newHash, u.name, u.phone, u.email, u.consentMillis,
+                        u.priorityType, u.priorityId, u.birth, u.priorityStatus, u.proofFile));
+                saveUsers();
+            }
+        } else {
+            String[] a = admins.get(id);
+            if (a != null) { a[1] = newHash; saveAdmins(); }
+        }
+    }
+
+    private static String adminRegisteredName(String id) {
+        if (ADMIN_USER.equals(id)) { User u = users.get(ADMIN_USER); return u == null ? "" : u.name; }
+        String[] a = admins.get(id);
+        return a == null ? "" : a[2];
+    }
+
+    /** True while this administrator still has a temporary password and must choose a new one. */
+    public static synchronized boolean adminMustChange(String id) {
+        sync(true);
+        return mustChange.contains(id);
+    }
+
+    /** An administrator asks another administrator to reset their password. Username and full name must match. */
+    public static synchronized String requestAdminReset(String username, String fullName) {
+        begin();
+        try {
+            String id = clean(username).toLowerCase();
+            if (!isAdminId(id) || !clean(fullName).equalsIgnoreCase(adminRegisteredName(id))) return "The details do not match our records.";
+            for (String[] r : adminResets) if (r[0].equals(id)) return null;                // already waiting
+            adminResets.add(new String[]{id, Long.toString(System.currentTimeMillis())});
+            saveAdminResets();
+            auditAsLocked(id, "PENDING_ADMIN", "ADMIN_RESET_REQUESTED", "Administrator " + id + " asked for a password reset");
+            addEventLocked("ADMIN_RESET", id, "", "", "Administrator " + id + " forgot their password and asks for a reset. Approve it under Admins.");
+            return null;
+        } finally {
+            end();
+        }
+    }
+
+    /** Password reset requests waiting: {id, name, requestedMillis}. */
+    public static synchronized List<String[]> getAdminResets() {
+        sync(false);
+        List<String[]> out = new ArrayList<String[]>();
+        for (String[] r : adminResets) out.add(new String[]{r[0], adminRegisteredName(r[0]), r[1]});
+        return out;
+    }
+
+    /** Another administrator approves the reset. Returns {error, temporaryPassword}; hand the temporary password over in person. */
+    public static synchronized String[] approveAdminReset(String id) {
+        begin();
+        try {
+            if (!"ADMIN".equals(actorRole)) return new String[]{"Only an administrator can do this.", null};
+            if (id.equals(actor)) return new String[]{"Another administrator has to approve your own reset request.", null};
+            String[] req = null;
+            for (String[] r : adminResets) if (r[0].equals(id)) req = r;
+            if (req == null || !isAdminId(id)) return new String[]{"That request no longer exists.", null};
+            String temp = randomCode(8, false);
+            setAdminHash(id, hash(id, temp));
+            mustChange.add(id);
+            adminResets.remove(req);
+            saveMustChange(); saveAdminResets();
+            auditLocked("ADMIN_RESET_APPROVED", "Temporary password issued to administrator " + id + " (must be changed at the next login)");
+            return new String[]{null, temp};
+        } finally {
+            end();
+        }
+    }
+
+    public static synchronized String rejectAdminReset(String id) {
+        begin();
+        try {
+            if (!"ADMIN".equals(actorRole)) return "Only an administrator can do this.";
+            String[] req = null;
+            for (String[] r : adminResets) if (r[0].equals(id)) req = r;
+            if (req == null) return "That request no longer exists.";
+            adminResets.remove(req);
+            saveAdminResets();
+            auditLocked("ADMIN_RESET_REJECTED", "Password reset request of administrator " + id + " rejected");
+            return null;
+        } finally {
+            end();
+        }
+    }
+
+    /** A locked-out administrator sets a new password with the recovery code from parkwise_data/admin_recovery_code.txt. The code then changes. */
+    public static synchronized String resetAdminWithCode(String username, String code, String newPassword) {
+        begin();
+        try {
+            String id = clean(username).toLowerCase();
+            String real = readRecoveryCode();
+            String a = clean(code).replaceAll("[\\s\\-]", "").toUpperCase();
+            String b = real == null ? null : real.replaceAll("[\\s\\-]", "").toUpperCase();
+            if (!isAdminId(id) || b == null || !MessageDigest.isEqual(a.getBytes(), b.getBytes()))
+                return "The username or the recovery code is not correct.";
+            setAdminHash(id, hash(id, newPassword));
+            if (mustChange.remove(id)) saveMustChange();
+            for (java.util.Iterator<String[]> it = adminResets.iterator(); it.hasNext();) if (it.next()[0].equals(id)) it.remove();
+            saveAdminResets();
+            writeNewRecoveryCode();
+            auditAsLocked(id, "ADMIN", "ADMIN_RESET_WITH_CODE", "Administrator " + id + " set a new password with the recovery code (the code was replaced)");
             return null;
         } finally {
             end();
@@ -1149,6 +1412,7 @@ public class DataStore {
         if (plateBusy(info, null))
             return "Plate " + Fmt.formatPlate(info.plate) + " already has a booking that overlaps this time.";
         info.price = Park.priceFor(info.hours, !info.immediate, info.slot, priority);
+        info.priority = priority;
         info.endMillis = info.immediate ? now + info.hours * HOUR_MS
                                         : Park.parseDate(info.date).getTime() + info.endMin() * 60000L;
         if (info.endMillis <= now) return "That time has already passed.";
@@ -1333,7 +1597,7 @@ public class DataStore {
             long now = System.currentTimeMillis();
             int ot = r.billableHours(now);
             if (ot <= 0) return "There is no overtime charge. You can leave without paying.";
-            double rate = Park.rateOf(r.slot);
+            double rate = r.overtimeRate();
             if (ot * rate > expectedFee + 0.001)
                 return "The overtime charge went up to " + Park.money(ot * rate) + " while you were paying.\n"
                      + "Please press Leave again and pay the new total.";
@@ -1416,7 +1680,7 @@ public class DataStore {
             saveReservations();
             long now = System.currentTimeMillis();
             int ot = r.status == PARKED ? r.billableHours(now) : 0;
-            double otFee = ot * Park.rateOf(r.slot);
+            double otFee = ot * r.overtimeRate();
             if (r.status == PARKED) {
                 historyLocked(r, "COMPLETED", actorLabel() + " (force check-out)", otFee);
                 auditLocked("FORCE_CHECKOUT", "Driver " + r.user + ", plate " + Fmt.formatPlate(r.plate) + ", slot " + r.slot
@@ -1633,7 +1897,7 @@ public class DataStore {
                     + "\t" + (r.immediate ? "1" : "0") + "\t" + nz(r.plate)
                     + "\t" + nz(r.refNo) + "\t" + r.leaveReqMillis + "\t" + r.leaveFee + "\t" + r.leaveHours
                     + "\t" + nz(r.leaveMode) + "\t" + nz(r.leaveRef)
-                    + "\t" + nz(r.receipt) + "\t" + nz(r.leaveReceipt));
+                    + "\t" + nz(r.receipt) + "\t" + nz(r.leaveReceipt) + "\t" + (r.priority ? "1" : "0"));
         writeAtomic(RES_FILE, lines);
     }
 
@@ -1659,6 +1923,16 @@ public class DataStore {
         List<String> lines = new ArrayList<String>();
         for (String[] a : admins.values()) lines.add(a[0] + "\t" + a[1] + "\t" + clean(a[2]) + "\t" + a[3] + "\t" + a[4]);
         writeAtomic(ADMINS_FILE, lines);
+    }
+
+    private static void saveAdminResets() {
+        List<String> lines = new ArrayList<String>();
+        for (String[] a : adminResets) lines.add(a[0] + "\t" + a[1]);
+        writeAtomic(RESET_FILE, lines);
+    }
+
+    private static void saveMustChange() {
+        writeAtomic(MUST_FILE, new ArrayList<String>(mustChange));
     }
 
     private static void saveAdminReqs() {
@@ -1694,6 +1968,8 @@ public class DataStore {
         users.clear();
         admins.clear();
         adminReqs.clear();
+        adminResets.clear();
+        mustChange.clear();
         reservations.clear();
         fines.clear();
         events.clear();
@@ -1724,13 +2000,14 @@ public class DataStore {
         for (String line : readLines(RES_FILE)) {
             String[] p = line.split("\t", -1);
             try {
-                if (p.length == 13 || p.length == 19 || p.length == 21) {
+                if (p.length == 13 || p.length == 19 || p.length == 21 || p.length == 22) {
                     ReservationInfo r = new ReservationInfo(p[0], p[1], p[2], p[3],
                             Integer.parseInt(p[4]), Integer.parseInt(p[5]), Double.parseDouble(p[6]),
                             Integer.parseInt(p[7]), p[8], Long.parseLong(p[9]), Long.parseLong(p[10]),
                             "1".equals(p[11]), p[12]);
                     if (p.length >= 19) {
-                        if (p.length == 21) { r.receipt = p[19]; r.leaveReceipt = p[20]; }
+                        if (p.length >= 21) { r.receipt = p[19]; r.leaveReceipt = p[20]; }
+                        if (p.length == 22) r.priority = "1".equals(p[21]);
                         r.refNo = p[13];
                         r.leaveReqMillis = Long.parseLong(p[14]);
                         r.leaveFee = Double.parseDouble(p[15]);
@@ -1739,6 +2016,10 @@ public class DataStore {
                         r.leaveRef = p[18];
                     }
                     r.slot = Park.normalizeSlot(r.slot);
+                    if (p.length < 22) {      // older save file: use the driver's verified status
+                        User ou = users.get(r.user);
+                        r.priority = ou != null && ou.priorityStatus == P_VERIFIED;
+                    }
                     reservations.put(r.id, r);
                 } else if (p.length == 7 || p.length == 8) {
                     // older save files: no time window and no plate. Treat as a whole-hours booking from midnight.
@@ -1797,6 +2078,12 @@ public class DataStore {
             String[] p = line.split("\t", -1);
             if (p.length == 4) adminReqs.add(p);
         }
+
+        for (String line : readLines(RESET_FILE)) {
+            String[] p = line.split("\t", -1);
+            if (p.length == 2) adminResets.add(p);
+        }
+        for (String line : readLines(MUST_FILE)) if (!line.trim().isEmpty()) mustChange.add(line.trim());
 
         for (String line : readLines(PLATES_FILE)) {
             String[] p = line.split("\t", -1);
@@ -1858,6 +2145,7 @@ public class DataStore {
         public boolean immediate;     // a "Park Now" booking (its clock does not follow a booked start time)
         public String  plate;
         public String  refNo = "";    // InstaPay reference number typed by the driver (QR payments)
+        public boolean priority = false;   // the driver was a verified PWD / senior citizen when booking: discounted rates, also for overtime
         public String  receipt = "";  // stored name of the attached payment receipt picture (QR payments)
         public String  leaveReceipt = "";
 
@@ -1906,7 +2194,10 @@ public class DataStore {
             return (int) ((billable + HOUR_MS - 1) / HOUR_MS);
         }
 
-        public double overtimeFee(long now) { return billableHours(now) * Park.rateOf(slot); }
+        /** Overtime price per hour: the normal rate, or the lower PWD / senior citizen rate. */
+        public double overtimeRate() { return priority ? Park.priorityRateOf(slot) : Park.rateOf(slot); }
+
+        public double overtimeFee(long now) { return billableHours(now) * overtimeRate(); }
 
         /** The overtime amount to show: frozen at the moment of the leave request if there is one. */
         public double shownOvertimeFee(long now) { return hasLeaveRequest() ? leaveFee : overtimeFee(now); }

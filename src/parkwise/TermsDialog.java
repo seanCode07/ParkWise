@@ -94,7 +94,7 @@ class TermsDialog extends JDialog {
             + "car reservation " + Park.moneyShort(Park.CAR_PRIORITY_FIRST) + " for the first hour then " + Park.moneyShort(Park.CAR_PRIORITY_RATE)
             + " per hour, car Park Now " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + " per hour; motorcycle reservation "
             + Park.moneyShort(Park.MOTO_PRIORITY_FIRST) + " for the first hour then " + Park.moneyShort(Park.MOTO_PRIORITY_RATE)
-            + " per hour, motorcycle Park Now " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour. Overtime is always billed at the regular hourly rate. "
+            + " per hour, motorcycle Park Now " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + " per hour. Overtime is billed at the same hourly rate as Park Now, so verified PWD / senior citizen drivers also pay the lower overtime rate. "
             + "You pay in advance for the hours you choose.</p>"
             + "<p><b>3. Payment and approval.</b> Reservations must be paid online through the InstaPay QR code. After paying, "
             + "type the payment reference number in the app. Park Now bookings may be paid by QR code or at the counter. For every QR payment you must also attach a screenshot or photo of your payment receipt. "
@@ -118,7 +118,7 @@ class TermsDialog extends JDialog {
             + "verified ID is charged a violation of " + pwdFee + "</b>. For app users it is billed to the account; walk-ins pay it at the counter. "
             + "This is on top of any parking or overtime charges. Giving a false ID is a breach of these terms.</p>"
             + "<p><b>7. Overtime.</b> If you stay past your paid time, a " + DataStore.GRACE_MINUTES
-            + "-minute grace period applies. After that, every extra hour you start is billed at the regular hourly rate (car " + car + ", motorcycle " + moto + "). "
+            + "-minute grace period applies. After that, every extra hour you start is billed at the hourly rate of your slot type (car " + car + ", motorcycle " + moto + "; verified PWD / senior citizen drivers: car " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + ", motorcycle " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + "). "
             + "If you have overtime, you must pay the <b>total extra charge</b> (QR code with reference number, or at the counter) "
             + "and the <b>admin must validate the payment before you are allowed to leave</b>. The amount is fixed at the moment "
             + "you send the payment. Overtime that is billed to your account must be paid from your dashboard and is also "
@@ -136,6 +136,8 @@ class TermsDialog extends JDialog {
             + "<p><b>12. Records and audit.</b> ParkWise keeps a permanent record of every parking session (driver, plate number, slot, entry and exit times, "
             + "hours paid and fees) and of administrative actions (who did what, when, with the old and new values of any correction). "
             + "These records cannot be edited or deleted from the app. They are kept for the management's records even if an account is later deleted. "
+            + "You can see your own past sessions under My Parking > History and remove entries from your own list; removing an entry only clears your view. "
+            + "You also get an alert about 5 minutes before your paid parking time ends. "
             + "An administrator may correct typing mistakes in a plate number or in your personal information; each correction is recorded.</p>"
             + "<p><b>13. Your account.</b> In Settings you can edit your personal information, change your password "
             + "and delete your account. An account can only be deleted when it has no bookings and no unpaid fees. After deleting, the same username and email "

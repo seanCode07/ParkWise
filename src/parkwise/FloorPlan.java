@@ -36,6 +36,8 @@ class FloorPlan extends JComponent {
     private final Map<String, Rectangle2D.Double> cells = new LinkedHashMap<String, Rectangle2D.Double>();
     private Listener listener;
     private String hover = null;
+    private java.util.Set<String> selectable = null;   // picking a slot: the slots that can be chosen (null = normal map)
+    private String selected = null, marked = null;       // the slot picked now, and the slot the booking is in now
     private boolean adminMode = false;        // admin monitoring: plate numbers in the slots and driver details in the tooltips
     private double scale = 1, offX = 0, offY = 0;
 
@@ -57,6 +59,13 @@ class FloorPlan extends JComponent {
     }
 
     void setListener(Listener l) { listener = l; }
+
+    /** Slot-picking mode: only the given slots can be chosen; "marked" is shown as the current slot. */
+    void setSelectionMode(java.util.Set<String> selectableSlots, String markedSlot) {
+        selectable = selectableSlots; marked = markedSlot; selected = null; repaint();
+    }
+
+    void setSelected(String slot) { selected = slot; repaint(); }
 
     /** In admin mode every booked slot shows the plate number, and the tooltip names the driver. */
     void setAdminMode(boolean on) { adminMode = on; repaint(); }
@@ -200,6 +209,32 @@ class FloorPlan extends JComponent {
         for (Map.Entry<String, Rectangle2D.Double> e : cells.entrySet())
             drawCell(g2, e.getKey(), e.getValue(), now);
         drawPillars(g2);
+        if (selectable != null) {
+            for (Map.Entry<String, Rectangle2D.Double> e : cells.entrySet()) {
+                String id = e.getKey();
+                Rectangle2D.Double r = e.getValue();
+                boolean isMarked = id.equals(marked), isSel = id.equals(selected), ok = selectable.contains(id);
+                if (!ok && !isMarked && !isSel) { g2.setColor(new Color(0, 0, 0, 120)); g2.fill(r); continue; }
+                if (ok && !isSel) {                                   // a slot that can be chosen
+                    g2.setColor(Park.alpha(Park.SLOT_AVAILABLE, 255)); g2.setStroke(new BasicStroke(1.6f));
+                    g2.draw(new Rectangle2D.Double(r.x + 1.5, r.y + 1.5, r.width - 3, r.height - 3)); g2.setStroke(THIN);
+                }
+                if (isMarked) {
+                    g2.setColor(new Color(0, 190, 255)); g2.setStroke(new BasicStroke(3f)); g2.draw(r); g2.setStroke(THIN);
+                    g2.setColor(new Color(0, 190, 255, 60)); g2.fill(r);
+                    g2.setFont(Park.bold(8));
+                    int tw = g2.getFontMetrics().stringWidth("CURRENT");
+                    g2.setColor(new Color(0, 150, 210)); g2.fill(new RoundRectangle2D.Double(r.x + r.width - tw - 8, r.y + 2, tw + 6, 11, 5, 5));
+                    textLeft(g2, "CURRENT", r.x + r.width - tw - 5, r.y + 10.5, Park.bold(8), Color.WHITE);
+                }
+                if (isSel) {
+                    g2.setColor(Park.alpha(Park.ACCENT, 140)); g2.fill(r);
+                    g2.setColor(Color.WHITE); g2.setStroke(new BasicStroke(3f)); g2.draw(r); g2.setStroke(THIN);
+                    text(g2, "MOVE", r.getCenterX(), r.y + r.height / 2 + 1, Park.bold(11), Color.WHITE);
+                    text(g2, "HERE", r.getCenterX(), r.y + r.height / 2 + 13, Park.bold(11), Color.WHITE);
+                }
+            }
+        }
         g2.dispose();
     }
 

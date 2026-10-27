@@ -304,7 +304,7 @@ class BookingDialog extends JDialog {
             noteLbl.setText(Park.lines(
                 Park.money(priority ? Park.priorityRateOf(slot) : Park.rateOf(slot)) + " per hour"
                     + (priority ? " (PWD / senior citizen rate)" : "") + ". Pay by QR code or at the counter. Your time starts by itself",
-                "when the admin approves. Overtime is " + Park.money(Park.rateOf(slot)) + "/hr after "
+                "when the admin approves. Overtime is " + Park.money(priority ? Park.priorityRateOf(slot) : Park.rateOf(slot)) + "/hr after "
                     + DataStore.GRACE_MINUTES + " min."));
             startTitle.setText("START TIME");
             startMin = Fmt.minuteOfDay(System.currentTimeMillis());

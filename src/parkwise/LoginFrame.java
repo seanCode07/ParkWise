@@ -115,7 +115,7 @@ class LoginFrame extends JFrame {
         side = new JPanel(new GridBagLayout()); side.setOpaque(false);
         card = new Park.Card(new BorderLayout(), 24);
         card.setBorder(Park.pad(26, 34, 22, 34));
-        card.setPreferredSize(new Dimension(440, 500));
+        card.setPreferredSize(new Dimension(440, 560));
         forms = new CardLayout();
         formPanel = new JPanel(forms); formPanel.setOpaque(false);
         formPanel.add(buildLoginPanel(), "login");
@@ -161,7 +161,17 @@ class LoginFrame extends JFrame {
         col.add(left(Park.lbl("Admin password", Park.plain(12), Park.TEXT_MUTED)));
         col.add(Box.createVerticalStrut(4));
         adminPass = Park.pass(20); sizeIt(adminPass, 42); col.add(left(adminPass));
-        col.add(Box.createVerticalStrut(12));
+        col.add(Box.createVerticalStrut(6));
+        JLabel aforgot = Park.lbl("Forgot password?", Park.bold(12), Park.WARNING);
+        aforgot.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        aforgot.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent e) { new AdminForgotDialog(LoginFrame.this, adminUser.getText().trim()).setVisible(true); }
+        });
+        JPanel aforgotRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0)); aforgotRow.setOpaque(false);
+        aforgotRow.add(aforgot);
+        aforgotRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 22));
+        col.add(left(aforgotRow));
+        col.add(Box.createVerticalStrut(4));
         adminStatus = Park.lbl(" ", Park.plain(12), Park.DANGER);
         col.add(left(adminStatus));
         col.add(Box.createVerticalStrut(8));
@@ -169,14 +179,16 @@ class LoginFrame extends JFrame {
         adminBtn.setFont(Park.bold(15)); adminBtn.setRadius(14); sizeIt(adminBtn, 46);
         col.add(left(adminBtn));
         col.add(Box.createVerticalStrut(10));
-        JLabel req = Park.lbl("Need admin access? Send a request", Park.bold(12), Park.WARNING);
-        req.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        req.setToolTipText("An existing administrator has to approve it");
-        req.addMouseListener(new MouseAdapter() {
-            public void mouseClicked(MouseEvent e) { showAdminRequest(); }
-        });
+        col.add(left(Park.lbl("New administrator?", Park.plain(12), Park.TEXT_MUTED)));
+        col.add(Box.createVerticalStrut(6));
+        Park.RoundButton req = new Park.RoundButton("Sign Up as Administrator", Park.BTN_IDLE, Park.TEXT_PRIMARY);
+        req.setFont(Park.bold(14)); req.setRadius(14); req.setOutline(Park.WARNING); sizeIt(req, 44);
+        req.setToolTipText("An existing administrator has to approve your request");
+        req.addActionListener(Fmt.act(new Runnable() { public void run() { showAdminRequest(); } }));
         col.add(left(req));
-        col.add(Box.createVerticalStrut(10));
+        col.add(Box.createVerticalStrut(4));
+        col.add(left(Park.lbl("An existing administrator must approve your sign-up.", Park.plain(11), Park.TEXT_MUTED)));
+        col.add(Box.createVerticalStrut(8));
         col.add(left(Park.lbl(Park.lines("Parking users: use the <b>Parking User</b> tab above",
                 "to log in or create an account."), Park.plain(12), Park.TEXT_MUTED)));
         adminBtn.addActionListener(new ActionListener() {
@@ -195,7 +207,7 @@ class LoginFrame extends JFrame {
         card.setLine(admin ? Park.WARNING : Park.BORDER);
         if (admin) {
             forms.show(formPanel, "admin");
-            card.setPreferredSize(new Dimension(440, 470));
+            card.setPreferredSize(new Dimension(440, 600));
             getRootPane().setDefaultButton(adminBtn);
             setTitle("ParkWise - Administrator Login");
             adminPass.setText("");
@@ -272,7 +284,12 @@ class LoginFrame extends JFrame {
         col.add(Box.createVerticalStrut(8));
         loginBtn = Park.primaryBtn("Login"); sizeIt(loginBtn, 46); col.add(left(loginBtn));
         col.add(Box.createVerticalStrut(14));
-        col.add(toggleRow("Don't have an account?", "Register here", false));
+        col.add(left(Park.lbl("New to ParkWise?", Park.plain(12), Park.TEXT_MUTED)));
+        col.add(Box.createVerticalStrut(6));
+        Park.RoundButton signUp = new Park.RoundButton("Sign Up - Create an Account", Park.BTN_IDLE, Park.TEXT_PRIMARY);
+        signUp.setFont(Park.bold(14)); signUp.setRadius(14); signUp.setOutline(Park.ACCENT); sizeIt(signUp, 44);
+        signUp.addActionListener(Fmt.act(new Runnable() { public void run() { setMode(false); } }));
+        col.add(left(signUp));
         loginBtn.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent e) { doLogin(); }
         });
@@ -397,6 +414,26 @@ class LoginFrame extends JFrame {
         return holder;
     }
 
+    /** The administrator logged in with a temporary password: they must pick a new one before going on. */
+    private boolean forceNewPassword(String id, String tempPassword) {
+        JPasswordField p1 = new JPasswordField(18), p2 = new JPasswordField(18);
+        JPanel pn = new JPanel(new GridLayout(0, 1, 0, 5));
+        pn.add(new JLabel("<html>You logged in with a temporary password.<br>Choose a new password to continue.</html>"));
+        pn.add(new JLabel("New password (at least 8 characters)")); pn.add(p1);
+        pn.add(new JLabel("Confirm new password")); pn.add(p2);
+        while (true) {
+            if (JOptionPane.showConfirmDialog(this, pn, "Choose a New Password", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE) != JOptionPane.OK_OPTION)
+                return false;
+            String a = new String(p1.getPassword()), b = new String(p2.getPassword());
+            String msg = a.length() < 8 ? "The password must be at least 8 characters."
+                       : !a.equals(b) ? "The passwords do not match."
+                       : a.equals(tempPassword) ? "Choose a different password from the temporary one."
+                       : DataStore.changePassword(id, tempPassword, a);
+            if (msg == null) return true;
+            JOptionPane.showMessageDialog(this, msg, "Choose a New Password", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
     /** Someone asks for administrator access. It only becomes active after an existing admin approves it. */
     private void showAdminRequest() {
         JTextField u = new JTextField(18), n = new JTextField(18);
@@ -469,6 +506,11 @@ class LoginFrame extends JFrame {
                 : "Invalid administrator username or password.");
             return;
         }
+        if (DataStore.adminMustChange(id) && !forceNewPassword(id, pw)) {
+            adminStatus.setText("You must choose a new password to continue.");
+            adminPass.setText("");
+            return;
+        }
         DataStore.setActor(id);
         DataStore.recordLogin(id, true, true);
         dispose();
@@ -524,7 +566,7 @@ class LoginFrame extends JFrame {
         loginStatus.setText(" "); regStatus.setText(" ");
         loginPass.setText("");
         forms.show(formPanel, login ? "login" : "register");
-        card.setPreferredSize(new Dimension(440, login ? 500 : 640));
+        card.setPreferredSize(new Dimension(440, login ? 560 : 640));
         getRootPane().setDefaultButton(login ? loginBtn : regBtn);
         side.revalidate(); side.repaint();
         setTitle(login ? "ParkWise - Login" : "ParkWise - Create Account");
