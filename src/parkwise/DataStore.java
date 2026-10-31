@@ -1400,7 +1400,9 @@ public class DataStore {
         if (qrPay && !isWalkIn(info.user) && info.receipt.isEmpty())
             return "Please attach a screenshot or photo of your payment receipt.";
         boolean priority = false;
-        if (!isWalkIn(info.user)) {
+        if (isWalkIn(info.user)) {
+            priority = info.priority;      // walk-in: set only when the admin checked the PWD / senior citizen ID at the counter
+        } else {
             User u = users.get(info.user);
             priority = u != null && u.priorityStatus == P_VERIFIED;
             if (Park.isPwdSlot(info.slot) && !priority)
@@ -1439,14 +1441,23 @@ public class DataStore {
         return null;
     }
 
-    /** Admin parks a driver that has no account. Starts the timer right away. */
-    public static synchronized String addWalkIn(String slot, String plate, int hours, boolean pwdIdShown) {
+    /**
+     * Admin parks a driver that has no account. Starts the timer right away.
+     * idApproved = the admin checked the walk-in's original PWD / senior citizen ID and approved it:
+     * the driver gets the discounted hourly rate (car 10, motorcycle 5), overtime included, and may use PWD / senior slots.
+     */
+    public static synchronized String addWalkIn(String slot, String plate, int hours, boolean idApproved) {
         begin();
         try {
-            ReservationInfo r = new ReservationInfo(WALK_IN, Park.today(), slot, 0, hours, hours * Park.rateOf(slot),
+            ReservationInfo r = new ReservationInfo(WALK_IN, Park.today(), slot, 0, hours,
+                    Park.priceFor(hours, false, slot, idApproved),
                     PARKED, "Walk-in (Counter)", plate, true);
+            r.priority = idApproved;
             String err = insertLocked(r);
-            if (err == null && Park.isPwdSlot(slot) && !pwdIdShown)
+            if (err == null && idApproved)
+                auditLocked("WALKIN_PWD_ID_APPROVED", "Admin approved a PWD / senior citizen ID for a walk-in, plate "
+                        + Fmt.formatPlate(plate) + ", slot " + slot + ": discounted rate " + Park.money(Park.priorityRateOf(slot)) + "/hr");
+            if (err == null && Park.isPwdSlot(slot) && !idApproved)
                 addViolationLocked(WALK_IN, plate, slot);
             return err;
         } finally {

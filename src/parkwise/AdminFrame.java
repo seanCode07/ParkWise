@@ -754,9 +754,9 @@ class AdminFrame extends JFrame {
 
     private String pwdNote(DataStore.ReservationInfo r) {
         boolean slot = Park.isPwdSlot(r.slot);
-        boolean disc = !DataStore.isWalkIn(r.user) && DataStore.isPriorityUser(r.user) && !r.immediate;
+        boolean disc = DataStore.isWalkIn(r.user) ? r.priority : DataStore.isPriorityUser(r.user) && !r.immediate;
         if (!slot && !disc) return "";
-        String what = DataStore.isWalkIn(r.user) ? "walk-in, no account" :
+        String what = DataStore.isWalkIn(r.user) ? (r.priority ? "walk-in, ID approved by admin" : "walk-in, no account") :
             DataStore.priorityName(DataStore.priorityType(r.user)) + " ID " + DataStore.priorityId(r.user)
             + (DataStore.isPriorityUser(r.user) ? " (verified)" : " (NOT verified)");
         return "  |  " + (slot ? "PWD/SENIOR SLOT" : "PWD/senior rate") + ": " + (DataStore.priorityType(r.user).isEmpty() && !DataStore.isWalkIn(r.user) ? "no ID" : what);
@@ -840,13 +840,19 @@ class AdminFrame extends JFrame {
         grid.add(Park.lbl("Parking slot", Park.plain(13), Park.TEXT_PRIMARY)); grid.add(picker.slotBox);
         grid.add(Park.lbl("Plate number", Park.plain(13), Park.TEXT_PRIMARY)); grid.add(plateF);
         grid.add(Park.lbl("Paid hours", Park.plain(13), Park.TEXT_PRIMARY));   grid.add(hrs);
+        final JCheckBox idBox = new JCheckBox("PWD / senior citizen: I checked the original ID (discounted rate)");
+        idBox.setOpaque(false); idBox.setForeground(Park.TEXT_PRIMARY); idBox.setFont(Park.plain(13));
+        idBox.setToolTipText("Tick only after checking the walk-in's original PWD or senior citizen ID. The discounted hourly rate applies.");
         JLabel errLbl = Park.lbl(" ", Park.plain(12), Park.DANGER);
+        JPanel south = new JPanel(new BorderLayout(0, 6)); south.setOpaque(false);
+        south.add(idBox, BorderLayout.NORTH); south.add(errLbl, BorderLayout.SOUTH);
         JPanel wrap = new JPanel(new BorderLayout(0, 10)); wrap.setOpaque(false);
         wrap.add(Park.lbl(Park.lines("<b>Walk-in driver (no app)</b>",
-                "Paid at the counter (car " + Park.moneyShort(Park.CAR_RATE) + "/hr, motorcycle " + Park.moneyShort(Park.MOTO_RATE) + "/hr). The timer starts now.",
+                "Paid at the counter (car " + Park.moneyShort(Park.CAR_RATE) + "/hr, motorcycle " + Park.moneyShort(Park.MOTO_RATE) + "/hr).",
+                "PWD / senior citizen with an approved ID: car " + Park.moneyShort(Park.CAR_PRIORITY_RATE) + "/hr, motorcycle " + Park.moneyShort(Park.MOTO_PRIORITY_RATE) + "/hr. The timer starts now.",
                 "Shown as " + DataStore.WALK_IN + " in the tables."), Park.plain(12), Park.TEXT_PRIMARY), BorderLayout.NORTH);
         wrap.add(grid, BorderLayout.CENTER);
-        wrap.add(errLbl, BorderLayout.SOUTH);
+        wrap.add(south, BorderLayout.SOUTH);
 
         while (true) {
             int ok = JOptionPane.showConfirmDialog(this, wrap, "Add Walk-in",
@@ -857,8 +863,8 @@ class AdminFrame extends JFrame {
             int h = ((Number) hrs.getValue()).intValue();
             String slot = picker.selected();
             if (slot == null) { errLbl.setText("Choose a slot."); continue; }
-            boolean pwdShown = true;
-            if (Park.isPwdSlot(slot)) {
+            boolean pwdShown = idBox.isSelected();      // admin approved the PWD / senior citizen ID: discount + PWD slot allowed
+            if (!pwdShown && Park.isPwdSlot(slot)) {
                 int a = askPwdId(slot, "this walk-in driver");
                 if (a == 2 || a == JOptionPane.CLOSED_OPTION) continue;
                 pwdShown = a == 0;
@@ -867,7 +873,8 @@ class AdminFrame extends JFrame {
             if (err != null) { errLbl.setText("<html>" + err.replace("\n", "<br>") + "</html>"); continue; }
             tick();
             info("Walk-in parked in slot " + slot + ".\nPlate " + Fmt.formatPlate(pl) + ", " + h + "h, "
-                + Park.money(h * Park.rateOf(slot)) + " (counter)."
+                + Park.money(Park.priceFor(h, false, slot, pwdShown)) + " (counter)."
+                + (pwdShown ? "\nPWD / senior citizen ID approved: " + Park.money(Park.priorityRateOf(slot)) + " per hour (overtime too)." : "")
                 + (Park.isPwdSlot(slot) && !pwdShown ? "\n\n" + Park.money(Park.PWD_VIOLATION) + " PWD / senior slot violation added under Fees & Penalties." : ""));
             return;
         }
@@ -888,7 +895,7 @@ class AdminFrame extends JFrame {
         if (newSlot == null) return;
         String err = DataStore.moveBooking(r.id, newSlot);
         if (err != null) { info(err); return; }
-        if (Park.isPwdSlot(newSlot) && !(!DataStore.isWalkIn(r.user) && DataStore.isPriorityUser(r.user))) {
+        if (Park.isPwdSlot(newSlot) && !(DataStore.isWalkIn(r.user) ? r.priority : DataStore.isPriorityUser(r.user))) {
             int a = askPwdId(newSlot, DataStore.isWalkIn(r.user) ? "this walk-in driver" : nameOf(r.user));
             if (a == 1) { DataStore.chargeViolation(r.user, r.plate, newSlot); refreshFines(); }
         }
